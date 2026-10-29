@@ -366,14 +366,15 @@ def princess():
         return zc + 0.012 * H - 0.03 * H * np.exp(-(x / (0.014 * H)) ** 2) + 0.05 * H * np.clip(y / (0.05 * H), 0, 1)
     zb = J["hips"].z - 0.01 * H
     BOD = sdf.Field("Cloth", h=0.0032 * H)
-    BOD.add(sdf.shell(torso, 0.006 * H, 0.0034 * H, G.region_and(G.ztop(neckline), G.zrange(zb, 2.0))))
+    # Solid layer grown from the torso, so the neckline closes onto the skin instead of standing off it.
+    BOD.add(sdf.slab(torso, 0.0055 * H, G.region_and(G.ztop(neckline), G.zrange(zb, 2.0))))
     parts.append((A.make(BOD, "Bodice", faces=3200), ("transfer", ["Hips", "Spine", "Chest"])))
     TR = sdf.Field("Gold", h=0.0026 * H)
-    TR.add(sdf.shell(torso, 0.0095 * H, 0.0028 * H, G.near_z(lambda x, y: neckline(x, y) - 0.004 * H, 0.0045 * H)))
+    TR.add(sdf.shell(torso, 0.0062 * H, 0.0026 * H, G.near_z(lambda x, y: neckline(x, y) - 0.003 * H, 0.004 * H)))
     for k in range(4):
         z = J["waist"].z - 0.035 * H + k * 0.025 * H
-        y0 = G.surface_y(torso, 0.012 * H, z, 0.0095 * H)
-        y1 = G.surface_y(torso, 0.012 * H, z + 0.022 * H, 0.0095 * H)
+        y0 = G.surface_y(torso, 0.012 * H, z, 0.0068 * H)
+        y1 = G.surface_y(torso, 0.012 * H, z + 0.022 * H, 0.0068 * H)
         for s in (1, -1):
             TR.cone(V3(-s * 0.012 * H, y0, z), V3(s * 0.012 * H, y1, z + 0.022 * H), 0.0028 * H, 0.0028 * H)
     parts.append((A.make(TR, "Trim", faces=1500), ("transfer", ["Hips", "Spine", "Chest"])))

@@ -263,7 +263,7 @@ class Field:
             if g.op == "intersect":
                 D = smax(D, g.eval(xs[:, None, None], ys[None, :, None], zs[None, None, :]), g.k)
                 continue
-            m = g.k + 3 * h
+            m = 2.0 * g.k + 3 * h   # smooth blends reach beyond k where the distance is approximate
             i0, i1 = (np.searchsorted(a, v) for a, v in ((xs, g.lo[0] - m), (xs, g.hi[0] + m)))
             j0, j1 = (np.searchsorted(a, v) for a, v in ((ys, g.lo[1] - m), (ys, g.hi[1] + m)))
             k0, k1 = (np.searchsorted(a, v) for a, v in ((zs, g.lo[2] - m), (zs, g.hi[2] + m)))

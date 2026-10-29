@@ -73,15 +73,19 @@ def body_field(J, role, female=False, bulk=1.0, gaunt=False, bust=1.0, belly=0.0
             F.ellipsoid(J["waist"] + V(0, -0.02 * H * belly, -0.01 * H), V(0.085, 0.075, 0.08) * H * belly * B, k=kt)
         F.ellipsoid(J["chest"] + V(0, 0.004 * H, -0.012 * H), (V(0.08, 0.058, 0.085) if f else V(0.104, 0.066, 0.1)) * H * B * t, k=kt)
         if f:
+            # Each breast is a teardrop: a full lower pole plus an upper slope that eases into the
+            # chest, angled slightly outward and down, with a soft cleavage between them.
+            r = 0.04 * H * bust
             for s in (1, -1):
-                r = 0.04 * H * bust
-                c = J["chest"] + V(s * 0.039 * H, -0.028 * H - r * 0.3, -0.014 * H)
-                ax = V(s, -0.3, 0).normalized()
-                F.ellipsoid(c, (r * 1.06, r * 0.8, r * 0.9), k=0.034 * H,
-                            axes=(ax, V(0, 0, 1).cross(ax).normalized() * -1, V(0, 0, 1)))
-        elif not gaunt:
+                ax = V(s, -0.28, -0.12).normalized()
+                ay = V(0, 0, 1).cross(ax).normalized()
+                az = ax.cross(ay).normalized()
+                low = J["chest"] + V(s * 0.05 * H, -0.03 * H - 0.3 * r, -0.03 * H)
+                F.ellipsoid(low, (r * 0.84, r * 0.8, r * 0.8), k=0.016 * H, axes=(ax, ay, az))
+                F.ellipsoid(low + V(-s * 0.08 * r, 0.32 * r, 0.52 * r), (r * 0.72, r * 0.48, r * 0.78), k=0.03 * H, axes=(ax, ay, az))
+        elif not gaunt and pecs:
             for s in (1, -1):
-                F.ellipsoid(J["chest"] + V(s * 0.046 * H, -0.044 * H * B, 0.03 * H), V(0.052, 0.026, 0.038) * H * B, k=0.02 * H)
+                F.ellipsoid(J["chest"] + V(s * 0.044 * H, -0.044 * H * B, 0.036 * H), V(0.056, 0.02, 0.034) * H * B, k=0.024 * H)
             for k in range(3):   # abdominal definition
                 for s in (1, -1):
                     F.ellipsoid(J["waist"] + V(s * 0.02 * H, -0.05 * H * B, 0.045 * H - k * 0.032 * H), V(0.018, 0.012, 0.014) * H * B, k=0.012 * H)
