@@ -411,7 +411,18 @@ def princess():
     bod = skin("Bodice", [(J["hips"] + Vector((0, 0, 0.03)), (0.123, 0.088)), (J["waist"], (0.074, 0.064)), (J["spine"], (0.086, 0.07)),
                           (J["chest"], (0.1, 0.082)), (J["neck"] + Vector((0, 0, -0.055)), (0.06, 0.05))], [(0, 1), (1, 2), (2, 3), (3, 4)], "Cloth", subsurf=2)
     parts.append(bind(bod, rig, ["Hips", "Spine", "Chest"]))
-    for k in range(5):
+    # A fuller bust, shaped into the bodice fabric, with a gold trim along the neckline.
+    bust_z = J["chest"].z - 0.005
+    for s in (1, -1):
+        bust = blob("Bust", 0.058, (s * 0.045, J["chest"].y - 0.052, bust_z), "Cloth", scale=(0.95, 0.88, 0.86), subdiv=3)
+        for v in bust.data.vertices:   # soften the underside into the waist
+            if v.co.z < bust_z:
+                v.co.y += (bust_z - v.co.z) * 0.35
+        parts.append(bind(bust, rig, "Chest"))
+    neckline = tube("Neckline", curve_pts((-0.1, J["chest"].y - 0.06, bust_z + 0.045), (0.1, J["chest"].y - 0.06, bust_z + 0.045), (0, -0.05, -0.012), 7),
+                    [0.006] * 7, "Gold", segs=6)
+    parts.append(bind(neckline, rig, "Chest"))
+    for k in range(3):
         z = J["waist"].z - 0.04 + k * 0.04
         for s in (1, -1):
             parts.append(bind(tube("Lacing", [Vector((-s * 0.02, -0.083, z)), Vector((s * 0.02, -0.084, z + 0.04))], [0.004, 0.004], "Gold", segs=5), rig, ["Spine", "Chest"]))
@@ -441,7 +452,7 @@ def princess():
         xform(sleeve, e + Vector((0, 0, -0.005)))
         parts.append(bind(sleeve, rig, "LowerArm" + side))
     parts.append(bind(ring("Necklace", J["neck"].z - 0.045, 0.052, "Gold", h=0.005, center=(0, J["neck"].y, 0)), rig, "Chest"))
-    parts.append(bind(blob("Pendant", 0.018, J["neck"] + Vector((0, -0.058, -0.075)), "Glow", subdiv=1, faceted=True), rig, "Chest"))
+    parts.append(bind(blob("Pendant", 0.016, J["neck"] + Vector((0, -0.062, -0.052)), "Glow", subdiv=1, faceted=True), rig, "Chest"))
     add_wings(rig, parts, J, 0.44, "Wing", "Horn", droop=0.04)
     add_tail(rig, parts, J["hips"] + Vector((0, 0.12, 0.0)), "SkinPale", "Cloth", 0.56, heart=True)
     finish_character("princess", rig, parts, "biped", weight=0.6, grace=1.0)
