@@ -18,8 +18,9 @@ Dungeons are generated in code. Characters and props are anime-style models buil
 - Each floor is a single generated mesh: textured walls and floors, emissive lava, and fog of war in the vertex colors.
 - An angled perspective camera with moonlight shadows, a torch light that follows you, and flickering braziers and portals.
 - **Universal Render Pipeline** with custom HLSL shaders. Characters get anime cel shading, a rim light and ink outlines. Faces are painted procedurally (glossy irises, lashes, brows, blush) onto UV-mapped heads.
-- **Modeled, not assembled.** Bodies are sculpted with Blender's Skin modifier over a joint graph and subdivided. Hair clumps, curved horns, tails and bat-wing fingers are tapered tubes. Gowns, pillars and fountains are lathed. Armor, chests and the throne are bevelled hard-surface pieces.
-- **Skinned skeletons.** Every character has an armature with weighted bodies and rigidly bound accessories. Animation is procedural on the bones: walk cycles with knees and elbows, diagonal quadruped gaits, spider legs, wing flaps, tail sway, attack swings, wind-ups, breathing and idle head motion.
+- **Modeled, not assembled.** Bodies are sculpted with Blender's Skin modifier over a joint graph with muscle nodes (biceps, forearms, thighs, calves), then subdivided. Hands have fingers and thumbs, and heads have noses and pointed demonic ears. Layered hair uses S-curved clumps and ribbon strands. Clothing is layered: corset lacing, an open overskirt over frilled petticoats, ruffled collars, folded capes, chainmail, multi-plate armor with gold trim.
+- **Painted surface detail.** Cube-projected UVs carry procedural detail textures in Unity: cloth weave, brushed metal, chain mail, leather and wood grain, wing veins, stone.
+- **Keyframed animation.** Every character has a skinned armature and Blender-authored clips (Idle, Walk, Attack, Cast, Hit, Death) with anticipation, follow-through and easing. Unity crossfades the loops, layers one-shots over them, times monster swings to their wind-ups, and plays death poses before bodies sink away.
 - **Live dialogue portraits.** An off-screen portrait studio renders the speaking character, animated, into the dialogue box.
 - Models: the Archdemon, Princess Lysandra, crusader knight, undead ghoul, wolf-beast, bat, spider, rock golem, ooze, imp quartermaster, plus every prop (throne, gate, pillars, braziers, chests, shrine, fountain, relic, ...).
 
@@ -91,7 +92,8 @@ Assets/
     Skills/    SkillDef, SkillDatabase (all 72 + monster/proc skills), SkillExecutor
     Items/     Item, ItemDatabase (bases, affixes, legendaries), ItemGenerator
     Combat/    Combat (hit resolution, statuses, procs), Projectile, MonsterAI (real-time steering, windups)
-    Rendering/ WorldRenderer (3D), ModelLibrary (FBX loading, cel materials), ModelRig (bone animation), FaceFactory (anime faces),
+    Rendering/ WorldRenderer (3D), ModelLibrary (FBX loading, cel materials), CharacterAnimator (clip playback), ModelRig (procedural fallback),
+               FaceFactory (anime faces), DetailFactory (surface detail textures),
                PortraitStudio (dialogue portraits), SpriteFactory (textures/icons), Fx
     UI/        GameUI (IMGUI: all screens and panels)
   Editor/
@@ -101,8 +103,10 @@ Assets/
     SmokeTest.cs      Headless test: data integrity, 300 generated floors, movement/navigation, simulated runs per class
     BalanceBot.cs     Real-time autoplay bot that reports how deep each class gets in an hour of play
 Tools/Blender/
-  build_models.py    Builds every model from primitives and exports FBX
-  preview_models.py  Renders a lineup PNG of exported models (add yaw=40 for a three-quarter view)
+  build_models.py    Models, rigs and animates every character and prop, exporting FBX (pass names to rebuild a subset)
+  dbmodel/geometry.py  Modeling, UV, rigging and export helpers
+  dbmodel/anim.py      Keyframed clip authoring for biped, quadruped, spider and flyer rigs
+  preview_models.py  Renders a lineup PNG of exported models (yaw=40 for a three-quarter view, pose=Walk:5 for a clip frame)
 ```
 
 ## Running
@@ -133,6 +137,6 @@ Builds/Windows/Depthbound.exe -screen-width 1600 -screen-height 900 -screen-full
 
 - Save and resume mid-run
 - Sound effects and music
-- Hand-keyframed animation clips, hand-painted textures, and more facial expressions
+- Hand-painted texture maps, facial expressions, and more clip variety (run, dodge roll, emotes)
 - More castle NPCs and branching dialogue
 - Set items, crafting/rerolling at the merchant, more biomes and bosses

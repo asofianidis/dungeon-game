@@ -536,6 +536,7 @@ namespace Depthbound
                 if (t == null) return false;
                 Combat.BasicAttack(p, t);
             }
+            p.MarkAction(false);
             p.actionLock = p.ActionTime(0.6f);
             return true;
         }
@@ -580,6 +581,7 @@ namespace Depthbound
                 }
             }
             if (!SkillExecutor.TryCast(p, def, rank, target)) return false;
+            p.MarkAction(!def.weapon);
             bool quick = (def.targeting == Targeting.Self && def.radius == 0) || def.targeting == Targeting.Summon || def.targeting == Targeting.Blink;
             p.actionLock = p.ActionTime(quick ? 0.3f : 0.55f);
             return true;

@@ -14,6 +14,7 @@ namespace Depthbound
             public GameObject root;
             public Camera cam;
             public ModelRig rig;
+            public CharacterAnimator anim;
             public RenderTexture texture;
             public float lastUsed;
         }
@@ -31,7 +32,7 @@ namespace Depthbound
             }
             s.cam.enabled = true;
             s.lastUsed = Time.unscaledTime;
-            s.rig.Pose(Time.unscaledTime, 0, 0, 0);
+            if (s.anim == null) s.rig.Pose(Time.unscaledTime, 0, 0, 0);
             return s.texture;
         }
 
@@ -52,6 +53,7 @@ namespace Depthbound
             holder.SetParent(s.root.transform, false);
             var go = ModelLibrary.Spawn(model, holder, character: true);
             s.rig = ModelRig.Attach(go, false, false);
+            s.anim = CharacterAnimator.Attach(go);
 
             s.texture = new RenderTexture(512, 512, 24, RenderTextureFormat.ARGB32) { name = "Portrait_" + model, antiAliasing = 4 };
             var camGo = new GameObject("PortraitCamera");

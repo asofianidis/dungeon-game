@@ -26,6 +26,7 @@ namespace Depthbound
             { "Fire", new Color(1f, 0.5f, 0.1f) }, { "Hair", new Color(0.12f, 0.05f, 0.18f) },
             { "White", new Color(0.92f, 0.92f, 0.88f) }, { "Wing", new Color(0.3f, 0.05f, 0.12f) },
             { "Leather", new Color(0.2f, 0.12f, 0.08f) }, { "HairPrincess", new Color(0.24f, 0.07f, 0.3f) },
+            { "Chain", new Color(0.4f, 0.41f, 0.45f) }, { "Lace", new Color(0.95f, 0.9f, 0.95f) }, { "Teeth", new Color(0.95f, 0.92f, 0.82f) },
         };
 
         static readonly Dictionary<string, float> emissive = new Dictionary<string, float>
@@ -51,6 +52,12 @@ namespace Depthbound
             if (materials.TryGetValue(key, out var m)) return m;
             m = new Material(LitShader) { name = key, color = color };
             if (face) m.mainTexture = FaceFactory.Get(role.Substring(4));
+            var detail = DetailFactory.ForRole(role);
+            if (detail != null)
+            {
+                m.SetTexture("_DetailTex", DetailFactory.Get(detail.Value.kind));
+                m.SetFloat("_DetailStrength", detail.Value.strength);
+            }
             if (emissive.TryGetValue(role, out var e)) m.SetColor("_Emission", color * e);
             if (character)
             {

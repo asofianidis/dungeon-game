@@ -52,6 +52,7 @@ namespace Depthbound
         {
             m.windup = time;
             m.windupTarget = t;
+            m.MarkAction(false);
             m.moveDir = Vector2.zero;
             m.facing = (t.pos - m.pos).normalized;
         }
@@ -104,6 +105,7 @@ namespace Depthbound
                         if (m.actionLock <= 0)
                         {
                             Combat.BasicAttack(m, target);
+                            m.MarkAction(m.def.ai != AiType.Ranged);
                             m.actionLock = m.ActionTime(1.4f);
                         }
                     }
@@ -184,7 +186,7 @@ namespace Depthbound
                         if (!los || d > s.range) continue;
                         break;
                 }
-                if (SkillExecutor.TryCast(m, s, m.skillRank, aim)) return true;
+                if (SkillExecutor.TryCast(m, s, m.skillRank, aim)) { m.MarkAction(!s.weapon); return true; }
             }
             return false;
         }

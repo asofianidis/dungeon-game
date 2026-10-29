@@ -7,6 +7,8 @@ Shader "Depthbound/Lit"
     {
         _Color ("Color", Color) = (1,1,1,1)
         _MainTex ("Texture", 2D) = "white" {}
+        _DetailTex ("Detail (0.5 = neutral)", 2D) = "gray" {}
+        _DetailStrength ("Detail Strength", Range(0, 1)) = 0
         _Emission ("Emission", Color) = (0,0,0,0)
         _Toon ("Toon", Range(0, 1)) = 0
         _RimColor ("Rim Color", Color) = (0,0,0,0)
@@ -21,9 +23,13 @@ Shader "Depthbound/Lit"
 
     TEXTURE2D(_MainTex);
     SAMPLER(sampler_MainTex);
+    TEXTURE2D(_DetailTex);
+    SAMPLER(sampler_DetailTex);
 
     CBUFFER_START(UnityPerMaterial)
         float4 _MainTex_ST;
+        float4 _DetailTex_ST;
+        half _DetailStrength;
         half4 _Color;
         half4 _Emission;
         half _Toon;
@@ -66,6 +72,7 @@ Shader "Depthbound/Lit"
                 float2 uv : TEXCOORD0;
                 float3 positionWS : TEXCOORD1;
                 half3 normalWS : TEXCOORD2;
+                float2 detailUV : TEXCOORD3;
             };
 
             Varyings vert(Attributes v)
@@ -75,12 +82,15 @@ Shader "Depthbound/Lit"
                 o.positionCS = TransformWorldToHClip(o.positionWS);
                 o.normalWS = TransformObjectToWorldNormal(v.normalOS);
                 o.uv = TRANSFORM_TEX(v.uv, _MainTex);
+                o.detailUV = TRANSFORM_TEX(v.uv, _DetailTex);
                 return o;
             }
 
             half4 frag(Varyings i) : SV_Target
             {
                 half4 c = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv) * _Color;
+                half detail = SAMPLE_TEXTURE2D(_DetailTex, sampler_DetailTex, i.detailUV).r * 2.0;
+                c.rgb *= lerp(1.0, detail, _DetailStrength);
                 half3 albedo = c.rgb * _Tint.rgb;
                 half3 n = normalize(i.normalWS);
                 half3 color = DepthboundLighting(i.positionWS, n, i.positionCS, albedo, _Toon);

@@ -12,9 +12,14 @@ import sys
 args = sys.argv[sys.argv.index("--") + 1:]
 src, out, names = args[0], args[1], args[2:]
 yaw = 0.0
+pose = None
 for n in list(names):
     if n.startswith("yaw="):
         yaw = float(n[4:])
+        names.remove(n)
+    elif n.startswith("pose="):
+        clip, frame = n[5:].split(":")
+        pose = (clip, int(frame))
         names.remove(n)
 
 for o in list(bpy.data.objects):
@@ -24,11 +29,31 @@ for i, name in enumerate(names):
     before = set(bpy.data.objects)
     bpy.ops.import_scene.fbx(filepath=os.path.join(src, name + ".fbx"))
     new = [o for o in bpy.data.objects if o not in before]
+    # Offset through a parent empty: animated armatures key their own object transform.
+    holder = bpy.data.objects.new("holder_" + name, None)
+    bpy.context.scene.collection.objects.link(holder)
+    holder.location.x = (i - (len(names) - 1) / 2) * 1.4
     for o in new:
         if o.parent is None:
-            o.location.x += (i - (len(names) - 1) / 2) * 1.4
+            o.parent = holder
 
 scene = bpy.context.scene
+if pose:
+    for ob in bpy.data.objects:
+        if ob.type != "ARMATURE":
+            continue
+        act = next((a for a in bpy.data.actions if a.name.endswith(pose[0]) and ob.name.split(".")[0] in a.name), None) \
+            or next((a for a in bpy.data.actions if a.name.endswith(pose[0])), None)
+        if act:
+            ob.animation_data_create()
+            ob.animation_data.action = act
+            try:
+                if act.slots:
+                    ob.animation_data.action_slot = act.slots[0]
+            except Exception:
+                pass
+    scene.frame_set(pose[1])
+    print("actions:", [a.name for a in bpy.data.actions][:12])
 scene.render.engine = "BLENDER_WORKBENCH"
 scene.display.shading.light = "STUDIO"
 scene.display.shading.color_type = "MATERIAL"

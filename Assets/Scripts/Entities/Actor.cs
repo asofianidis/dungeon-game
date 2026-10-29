@@ -56,6 +56,11 @@ namespace Depthbound
 
         /// <summary>Seconds until this actor may attack or cast again.</summary>
         public float actionLock;
+
+        /// <summary>Increments whenever the actor starts an attack or spell, so the renderer can play a clip.</summary>
+        public int actionSerial;
+        public bool actionIsSpell;
+        public void MarkAction(bool spell) { actionSerial++; actionIsSpell = spell; }
         public float baseSpeed = 100;
         public bool dead, isBoss;
         public Actor owner;

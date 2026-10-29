@@ -27,6 +27,8 @@ namespace Depthbound
         {
             public GameObject root, model;
             public ModelRig rig;
+            public CharacterAnimator anim;
+            public int lastSerial;
             public Renderer[] renderers;
             public SpriteRenderer ring;
             public float lastLife, flash, attack, windup, move, yaw, lastLock, death = -1;
@@ -39,6 +41,7 @@ namespace Depthbound
             public GameObject go;
             public Renderer[] renderers;
             public ModelRig rig;
+            public CharacterAnimator anim;
             public Light light;
         }
 
@@ -492,7 +495,11 @@ namespace Depthbound
             bool faceNorth = t == Tile.Portal && world.InHub;
             holder.transform.rotation = Quaternion.Euler(0, faceNorth ? 0 : 180, 0);
             var pv = new PropView { tile = t, go = holder, renderers = holder.GetComponentsInChildren<Renderer>() };
-            if (t == Tile.Princess || t == Tile.Merchant) pv.rig = ModelRig.Attach(go, false, false);
+            if (t == Tile.Princess || t == Tile.Merchant)
+            {
+                pv.anim = CharacterAnimator.Attach(go);
+                if (pv.anim == null) pv.rig = ModelRig.Attach(go, false, false);
+            }
             if (t == Tile.Brazier || t == Tile.Portal)
             {
                 var lg = new GameObject("light");
@@ -536,6 +543,8 @@ namespace Depthbound
                 }
             }
             v.rig = ModelRig.Attach(v.model, hoverFly, squash);
+            v.anim = CharacterAnimator.Attach(v.model);
+            v.lastSerial = a.actionSerial;
             v.renderers = v.model.GetComponentsInChildren<Renderer>();
             v.yaw = Mathf.Atan2(a.facing.x, a.facing.y) * Mathf.Rad2Deg;
             return v;
@@ -562,17 +571,28 @@ namespace Depthbound
                     v.yaw = Mathf.MoveTowardsAngle(v.yaw, target, dt * 720f);
                 }
                 v.root.transform.rotation = Quaternion.Euler(0, v.yaw, 0);
-                if (a.actionLock > v.lastLock + 0.05f) v.attack = 1f;
-                v.lastLock = a.actionLock;
-                v.attack = Mathf.Max(0, v.attack - dt * 4f);
                 var mon = a as Monster;
+                if (a.actionSerial != v.lastSerial)
+                {
+                    v.lastSerial = a.actionSerial;
+                    v.attack = 1f;
+                    // A monster's swing lands when its wind-up ends: time the clip's strike (about 42% in) to match.
+                    float duration = mon != null && mon.windup >= 0 ? Mathf.Max(0.2f, mon.windup / 0.42f) : (a.actionIsSpell ? 0.5f : 0.42f);
+                    v.anim?.Play(a.actionIsSpell ? "Cast" : "Attack", duration);
+                }
+                v.attack = Mathf.Max(0, v.attack - dt * 4f);
                 v.windup = Mathf.MoveTowards(v.windup, mon != null && mon.windup >= 0 ? 1f : 0f, dt * 8f);
-                if (a.life < v.lastLife - 0.01f) v.flash = 1f;
+                if (a.life < v.lastLife - 0.01f)
+                {
+                    v.flash = 1f;
+                    if (v.anim != null && !v.anim.Busy) v.anim.Play("Hit", 0.3f);
+                }
                 v.lastLife = a.life;
                 v.flash = Mathf.Max(0, v.flash - dt * 7f);
+                if (v.anim != null) v.anim.Locomotion(v.move, speed / (a is Player ? 3.4f : 2.3f));
                 if (!vis) continue;
 
-                v.rig.Pose(Time.time, v.move, v.attack > 0 ? 1f - v.attack : 0, v.windup);
+                if (v.anim == null) v.rig.Pose(Time.time, v.move, v.attack > 0 ? 1f - v.attack : 0, v.windup);
 
                 Color tint = Color.white;
                 if (a.Has(StatusType.Freeze)) tint = new Color(0.55f, 0.8f, 1.3f);
@@ -592,9 +612,14 @@ namespace Depthbound
             foreach (var kv in gone)
             {
                 var v = kv.Value;
-                if (v.death < 0) v.death = 0.5f;
+                if (v.death < 0)
+                {
+                    // Play the death clip, then sink the body away.
+                    v.death = v.anim != null ? v.anim.DeathLength + 0.6f : 0.5f;
+                    v.anim?.Die();
+                }
                 v.death -= dt;
-                if (v.root)
+                if (v.root && v.death < 0.5f)
                 {
                     v.root.transform.position += Vector3.down * dt * 0.8f;
                     v.root.transform.localScale = Vector3.one * Mathf.Clamp01(v.death * 2f + 0.2f);

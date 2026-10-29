@@ -18,6 +18,7 @@ namespace Depthbound.EditorTools
             try
             {
                 failures += CheckData();
+                failures += CheckModels();
                 failures += GenerateFloors();
                 failures += MovementCheck();
                 foreach (var cls in ClassDatabase.All)
@@ -83,6 +84,26 @@ namespace Depthbound.EditorTools
             Debug.Log($"SMOKE: move end={p.pos} moved={moved:0.00} input={p.moveInput}");
             if (Vector2.Distance(p.pos, w.map.stairs) > 1.5f) { Debug.LogError("SMOKE: player failed to reach the stairs (wedged?)"); return 1; }
             return 0;
+        }
+
+        static int CheckModels()
+        {
+            int fails = 0;
+            var clips = new[] { "Idle", "Walk", "Attack", "Cast", "Hit", "Death" };
+            foreach (var model in new[] { "demon", "princess", "human", "humanoid", "merchant", "beast", "flyer", "insect", "golem" })
+            {
+                var prefab = Resources.Load<GameObject>("Models/" + model);
+                var anim = prefab != null ? prefab.GetComponentInChildren<Animation>(true) : null;
+                if (anim == null) { Debug.LogError($"SMOKE: model {model} has no Animation component"); fails++; continue; }
+                var names = new System.Collections.Generic.List<string>();
+                foreach (AnimationState s in anim) names.Add(s.name);
+                var missing = clips.Where(c => anim.GetClip(c) == null).ToList();
+                if (missing.Count > 0) { Debug.LogError($"SMOKE: model {model} missing clips {string.Join(",", missing)} (has {string.Join(",", names)})"); fails++; }
+                int bones = prefab.GetComponentsInChildren<SkinnedMeshRenderer>(true).Sum(r => r.bones.Length);
+                if (bones == 0) { Debug.LogError($"SMOKE: model {model} is not skinned"); fails++; }
+            }
+            Debug.Log($"SMOKE: models checked ({(fails == 0 ? "all clips present" : fails + " problems")})");
+            return fails;
         }
 
         static int GenerateFloors()
