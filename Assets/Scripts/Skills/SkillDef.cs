@@ -131,12 +131,12 @@ namespace Depthbound
                 if (bonusCrit > 0) sb.AppendLine($"+{bonusCrit}% critical chance.");
                 if (executeBonus > 0) sb.AppendLine($"+{executeBonus}% damage to enemies below 30% life.");
             }
-            if (status != StatusType.None) sb.AppendLine($"{Mathf.RoundToInt(statusChance)}% chance to inflict {status} ({statusTurns} turns).");
+            if (status != StatusType.None) sb.AppendLine($"{Mathf.RoundToInt(statusChance)}% chance to inflict {status} ({statusTurns}s).");
             if (healPct > 0) sb.AppendLine($"Heals {healPct + healPerRank * (rank - 1):0}% of maximum life.");
             if (shieldPct > 0) sb.AppendLine($"Grants a shield equal to {shieldPct + shieldPerRank * (rank - 1):0}% of maximum life.");
             if (knockback) sb.AppendLine("Knocks enemies back.");
             if (pull) sb.AppendLine("Pulls enemies toward the center.");
-            foreach (var m in mods) sb.AppendLine(StatInfo.Describe(m.stat, m.At(rank)) + (buffTurns > 0 ? $" for {buffTurns} turns" : ""));
+            foreach (var m in mods) sb.AppendLine(StatInfo.Describe(m.stat, m.At(rank)) + (buffTurns > 0 ? $" for {buffTurns}s" : ""));
             if (!string.IsNullOrEmpty(summonId))
             {
                 var md = MonsterDatabase.Get(summonId);
@@ -152,7 +152,7 @@ namespace Depthbound
             {
                 var cost = lifeCostPct > 0 ? $"{lifeCostPct:0}% life" : $"{Mathf.RoundToInt(ManaCost(rank))} mana";
                 sb.Append($"Cost: {cost}");
-                if (cooldown > 0) sb.Append($"   Cooldown: {cooldown} turns");
+                if (cooldown > 0) sb.Append($"   Cooldown: {cooldown}s");
                 sb.AppendLine();
             }
             return sb.ToString().TrimEnd();

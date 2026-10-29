@@ -1,8 +1,17 @@
 # Depthbound
 
-A procedurally generated, turn-based 2D roguelike dungeon crawler built in Unity 6. Dive as deep as you can, die, grow stronger, and dive again.
+A procedurally generated, real-time 2D action roguelike dungeon crawler built in Unity 6. Dive as deep as you can, die, grow stronger, and dive again.
 
 Everything (dungeons, monsters, sprites, icons, and UI) is generated from code, so the project has no binary art dependencies.
+
+## Real-time combat
+
+- Free WASD movement with wall sliding and corner assist, plus a **dodge roll** (Space) with brief invulnerability.
+- Hold Left Mouse to attack toward the cursor. Melee hits the enemy you're facing; bows and wands fire projectiles.
+- Monster and player projectiles travel through the world and can be dodged.
+- Melee monsters **flash red during a short windup** before swinging. Step or roll away and the swing misses.
+- Attack/Cast Speed and Movement Speed are stats on gear, skills and shrines. Cooldowns, buffs and status effects run in seconds.
+- The game pauses while any panel (inventory, skills, hero, help) is open.
 
 ## Core loop
 
@@ -38,11 +47,11 @@ Combined with attribute allocation and 72 skills that stack across schools, this
 
 | Action | Keys |
 | --- | --- |
-| Move / attack | WASD, arrows, numpad; diagonals Q E Z C |
-| Travel | Left-click a tile |
-| Skills | 1-8 (aimed at the mouse cursor); right-click casts slot 1 |
-| Wait / pick up | Space |
-| Descend | Enter or `>` on stairs |
+| Move | WASD / arrows |
+| Attack | Hold Left Mouse (aims at the cursor) |
+| Dodge roll | Space |
+| Skills | Hold 1-8 (aimed at the cursor); Right Mouse casts slot 1 |
+| Interact / descend | E (or click chests, shrines, merchants) |
 | Potions | R (health), F (mana) |
 | Panels | I inventory, K skills, P hero, H help, Esc menu |
 | Zoom | Mouse wheel |
@@ -53,19 +62,19 @@ Combined with attribute allocation and 72 skills that stack across schools, this
 Assets/
   Scenes/Main.unity          Single bootstrap scene
   Scripts/
-    Core/      GameManager (state + input), World (turn loop, floors, loot), Rng, MetaProgress
+    Core/      GameManager (state + input), World (real-time simulation, collision, floors, loot), Rng, MetaProgress
     Dungeon/   DungeonMap (tiles, FOV, LOS, distance fields), DungeonGenerator (BSP/caves/ruins/hybrid)
     Entities/  Actor, Player, Monster, class + monster databases
     Stats/     StatType definitions and formatting
     Skills/    SkillDef, SkillDatabase (all 72 + monster/proc skills), SkillExecutor
     Items/     Item, ItemDatabase (bases, affixes, legendaries), ItemGenerator
-    Combat/    Combat (hit resolution, statuses, procs), MonsterAI
+    Combat/    Combat (hit resolution, statuses, procs), Projectile, MonsterAI (real-time steering, windups)
     Rendering/ SpriteFactory (procedural pixel art), WorldRenderer, Fx
     UI/        GameUI (IMGUI: all screens and panels)
   Editor/
     ProjectSetup.cs   Menu: Depthbound > Setup Main Scene / Build Windows
-    SmokeTest.cs      Headless test: data integrity, 300 generated floors, simulated runs per class
-    BalanceBot.cs     Autoplay bot that reports how deep each class gets
+    SmokeTest.cs      Headless test: data integrity, 300 generated floors, movement/navigation, simulated runs per class
+    BalanceBot.cs     Real-time autoplay bot that reports how deep each class gets in an hour of play
 ```
 
 ## Running

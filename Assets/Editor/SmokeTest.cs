@@ -19,6 +19,7 @@ namespace Depthbound.EditorTools
             {
                 failures += CheckData();
                 failures += GenerateFloors();
+                failures += MovementCheck();
                 foreach (var cls in ClassDatabase.All)
                     failures += SimulateRun(cls, cls.id.GetHashCode() & 0x7FFFFFFF, 600);
                 failures += SimulateRun(ClassDatabase.All[0], 1234, 400, corruption: 3, godMode: true, startDepth: 26);
@@ -65,6 +66,25 @@ namespace Depthbound.EditorTools
             return fails;
         }
 
+        static int MovementCheck()
+        {
+            var w = new World(ClassDatabase.Get("pyromancer"), 4242, 0, new MetaProgress(), false);
+            var p = w.player;
+            var start = p.pos;
+            var dist = w.map.DistanceField(new[] { w.map.stairs }, true);
+            Debug.Log($"SMOKE: move start={p.pos} tile={p.Pos} distHere={dist[p.x, p.y]} stairs={w.map.stairs} speed={p.MoveSpeed} chill={p.Has(StatusType.Chill)}");
+            for (int i = 0; i < 600 && Vector2.Distance(p.pos, w.map.stairs) > 1.2f; i++)
+            {
+                p.moveInput = w.SteerAlong(p, dist) ?? Vector2.zero;
+                p.life = p.MaxLife;
+                w.Tick(0.05f);
+            }
+            float moved = Vector2.Distance(start, p.pos);
+            Debug.Log($"SMOKE: move end={p.pos} moved={moved:0.00} input={p.moveInput}");
+            if (Vector2.Distance(p.pos, w.map.stairs) > 1.5f) { Debug.LogError("SMOKE: player failed to reach the stairs (wedged?)"); return 1; }
+            return 0;
+        }
+
         static int GenerateFloors()
         {
             int fails = 0;
@@ -107,38 +127,32 @@ namespace Depthbound.EditorTools
             p.Recalc();
 
             int floors = 0, casts = 0;
-            for (int t = 0; t < turns; t++)
+            const float dt = 0.05f;
+            int steps = turns * 4;
+            for (int t = 0; t < steps; t++)
             {
-                if (godMode || t % 50 == 0) { p.life = p.MaxLife; p.mana = p.MaxMana; }
+                if (godMode || t % 200 == 0) { p.life = p.MaxLife; p.mana = p.MaxMana; }
                 if (p.dead) break;
-                Fx.Pending.Clear();
+                if (t % 10 == 0) p.moveInput = new Vector2(rng.Range(-1f, 1f), rng.Range(-1f, 1f));
                 int action = rng.Range(0, 100);
-                if (action < 8 && p.backpack.Count > 0) p.Equip(rng.Pick(p.backpack));
-                if (action < 45)
+                var e = w.NearestEnemy(8);
+                var aim = e != null ? e.pos : p.pos + new Vector2(rng.Range(-4f, 4f), rng.Range(-4f, 4f));
+                if (action < 3 && p.backpack.Count > 0) p.Equip(rng.Pick(p.backpack));
+                else if (action < 30) { if (w.PlayerUseSkill(rng.Range(0, Player.HotbarSize), aim)) casts++; }
+                else if (action < 55) w.PlayerAttack(aim);
+                else if (action < 57) w.QuaffHealth();
+                else if (action < 59) w.PlayerDodge(p.moveInput);
+                else if (action < 60) w.Interact();
+                if (t % 600 == 599)
                 {
-                    int slot = rng.Range(0, Player.HotbarSize);
-                    if (p.hotbar[slot] != null)
-                    {
-                        var e = w.NearestEnemy(8);
-                        if (w.PlayerUseSkill(slot, e != null ? e.Pos : p.Pos + new Vector2Int(rng.Range(-3, 4), rng.Range(-3, 4)))) casts++;
-                        else w.PlayerWait();
-                    }
-                    else w.PlayerWait();
-                }
-                else if (action < 50) { w.QuaffHealth(); }
-                else if (action < 53 || t % 120 == 119)
-                {
-                    if (w.ActorAt(w.map.stairs) == null) w.MoveActor(p, w.map.stairs.x, w.map.stairs.y);
+                    p.pos = w.map.stairs;
+                    w.Tick(dt);
                     if (w.map.stairsSealed) foreach (var m in w.actors.OfType<Monster>().Where(m => m.isBoss).ToList()) w.Kill(m, p);
                     if (w.Descend()) floors++;
                 }
-                else
-                {
-                    if (!w.PlayerMove(rng.Range(-1, 2), rng.Range(-1, 2))) w.PlayerWait();
-                }
-            }
-            Fx.Pending.Clear();
-            Debug.Log($"SMOKE: {cls.name} seed {seed}: {w.turn} turns, depth {w.depth}, level {p.level}, kills {w.stats.kills}, casts {casts}, floors {floors}, dead={p.dead}, keystones={p.keystones.Count}, procs={p.procs.Count}");
+                w.Tick(dt);
+            }            Fx.Pending.Clear();
+            Debug.Log($"SMOKE: {cls.name} seed {seed}: {w.stats.time:0}s, depth {w.depth}, level {p.level}, kills {w.stats.kills}, casts {casts}, floors {floors}, dead={p.dead}, keystones={p.keystones.Count}, procs={p.procs.Count}");
             return 0;
         }
     }

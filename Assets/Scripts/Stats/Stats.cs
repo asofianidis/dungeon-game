@@ -15,6 +15,7 @@ namespace Depthbound
         CooldownReduction, ManaCostReduction, StatusChance,
         SummonDamage, SummonLife, AreaRadius, ExtraProjectiles, DoubleStrike,
         MagicFind, GoldFind, LightRadius, AllSkills, DamageReduction, XpBonus,
+        ActionSpeed, MoveSpeed,
         COUNT
     }
 
@@ -59,6 +60,7 @@ namespace Depthbound
             { StatType.MagicFind, "Magic Find" }, { StatType.GoldFind, "Gold Find" },
             { StatType.LightRadius, "Light Radius" }, { StatType.AllSkills, "to All Skills" },
             { StatType.DamageReduction, "Damage Reduction" }, { StatType.XpBonus, "Experience Gained" },
+            { StatType.ActionSpeed, "increased Attack and Cast Speed" }, { StatType.MoveSpeed, "increased Movement Speed" },
         };
 
         static readonly HashSet<StatType> percent = new HashSet<StatType>
@@ -70,7 +72,7 @@ namespace Depthbound
             StatType.PoisonRes, StatType.HolyRes, StatType.ShadowRes, StatType.AllRes, StatType.LifeSteal,
             StatType.CooldownReduction, StatType.ManaCostReduction, StatType.StatusChance, StatType.SummonDamage,
             StatType.SummonLife, StatType.DoubleStrike, StatType.MagicFind, StatType.GoldFind,
-            StatType.DamageReduction, StatType.XpBonus,
+            StatType.DamageReduction, StatType.XpBonus, StatType.ActionSpeed, StatType.MoveSpeed,
         };
 
         public static string Name(StatType s) => names.TryGetValue(s, out var n) ? n : s.ToString();

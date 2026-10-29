@@ -19,6 +19,13 @@ namespace Depthbound
         public int gold, healthPotions, manaPotions, kills;
         public readonly List<StatMod> metaMods = new List<StatMod>();
 
+        // Real-time control state
+        public Vector2 moveInput;
+        public float dodgeTime, dodgeCooldown, potionLock;
+        public Vector2 dodgeDir;
+        public bool Dodging => dodgeTime > 0;
+        public const float DodgeDuration = 0.22f, DodgeCooldownTime = 1.1f, DodgeSpeed = 13f;
+
         readonly Dictionary<string, int> skillBonus = new Dictionary<string, int>();
         readonly Dictionary<School, int> schoolBonus = new Dictionary<School, int>();
         public readonly Dictionary<string, int> granted = new Dictionary<string, int>();

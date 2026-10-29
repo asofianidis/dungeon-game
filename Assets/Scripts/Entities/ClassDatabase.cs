@@ -54,7 +54,7 @@ namespace Depthbound
         public static readonly string[] AttributeHelp =
         {
             "+0.8% Attack Damage, +0.5 Armor",
-            "+1.5 Accuracy, +1 Evasion, +0.06% Crit, +0.3% Attack Damage",
+            "+1.5 Accuracy, +1 Evasion, +0.06% Crit, +0.2% Attack/Cast Speed",
             "+1% Spell Damage, +1 Mana",
             "+5 Life, +0.03 Life Regen",
             "+3 Mana, +0.06 Mana Regen",

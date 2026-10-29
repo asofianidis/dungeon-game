@@ -18,7 +18,6 @@ namespace Depthbound
         {
             public GameObject go;
             public SpriteRenderer sr, aura, barBg, barFill;
-            public Vector3 pos;
             public float fade = -1;
         }
 
@@ -33,18 +32,20 @@ namespace Depthbound
         public readonly List<FloatingText> texts = new List<FloatingText>();
         public float zoom = 8.5f;
         public Vector2Int MouseTile { get; private set; }
+        public Vector2 MouseWorld { get; private set; }
 
         World world;
-        int builtVersion = -1, shadedTurn = -1;
+        int builtVersion = -1, shadedVersion = -1;
         SpriteRenderer[,] tiles;
         Tile[,] tileState;
         Transform tileRoot, actorRoot, itemRoot, fxRoot;
         readonly Dictionary<Actor, ActorView> views = new Dictionary<Actor, ActorView>();
+        readonly Dictionary<Projectile, SpriteRenderer> projViews = new Dictionary<Projectile, SpriteRenderer>();
         readonly List<SpriteRenderer> itemPool = new List<SpriteRenderer>();
         readonly List<FxObj> fx = new List<FxObj>();
         Camera cam;
         SpriteRenderer hover;
-        Sprite ringSprite, frameSprite;
+        Sprite ringSprite, frameSprite, dotSprite;
 
         public void Bind(World w)
         {
@@ -57,6 +58,8 @@ namespace Depthbound
         {
             foreach (var v in views.Values) if (v.go) Destroy(v.go);
             views.Clear();
+            foreach (var p in projViews.Values) if (p) Destroy(p.gameObject);
+            projViews.Clear();
             foreach (var f in fx) if (f.sr) Destroy(f.sr.gameObject);
             fx.Clear();
             texts.Clear();
@@ -86,6 +89,7 @@ namespace Depthbound
             fxRoot = new GameObject("Fx").transform;
             ringSprite = MakeRing();
             frameSprite = MakeFrame();
+            dotSprite = MakeDot();
             hover = NewSprite("Hover", null, frameSprite, 25);
             hover.color = new Color(1f, 1f, 1f, 0.5f);
             hover.enabled = false;
@@ -100,6 +104,18 @@ namespace Depthbound
                     float dx = (x - 7.5f) / 7.5f, dy = (y - 7.5f) / 4.5f;
                     float d = Mathf.Sqrt(dx * dx + dy * dy);
                     if (d <= 1f) t.SetPixel(x, y, new Color(1, 1, 1, d > 0.7f ? 1f : 0.35f));
+                }
+            return SpriteFactory.ToSprite(t);
+        }
+
+        static Sprite MakeDot()
+        {
+            var t = SpriteFactory.NewTex(8, 8);
+            for (int x = 0; x < 8; x++)
+                for (int y = 0; y < 8; y++)
+                {
+                    float d = Vector2.Distance(new Vector2(x, y), new Vector2(3.5f, 3.5f)) / 4f;
+                    if (d <= 1f) t.SetPixel(x, y, new Color(1, 1, 1, d < 0.55f ? 1f : 0.55f));
                 }
             return SpriteFactory.ToSprite(t);
         }
@@ -129,8 +145,9 @@ namespace Depthbound
         {
             if (world == null || world.map == null) return;
             if (builtVersion != world.floorVersion) Rebuild();
-            if (shadedTurn != world.turn || Time.frameCount % 20 == 0) ShadeTiles();
+            if (shadedVersion != world.fovVersion || Time.frameCount % 20 == 0) ShadeTiles();
             UpdateActors();
+            UpdateProjectiles();
             UpdateItems();
             ProcessFxEvents();
             UpdateFx();
@@ -155,9 +172,9 @@ namespace Depthbound
                     tiles[x, y] = sr;
                     SetTileSprite(x, y, bi);
                 }
-            shadedTurn = -1;
+            shadedVersion = -1;
             var p = world.player;
-            cam.transform.position = new Vector3(p.x, p.y, -10);
+            cam.transform.position = new Vector3(p.pos.x, p.pos.y, -10);
         }
 
         void SetTileSprite(int x, int y, int bi)
@@ -170,7 +187,7 @@ namespace Depthbound
 
         void ShadeTiles()
         {
-            shadedTurn = world.turn;
+            shadedVersion = world.fovVersion;
             var map = world.map;
             int bi = Biomes.IndexForDepth(world.depth);
             var p = world.player;
@@ -182,7 +199,7 @@ namespace Depthbound
                     if (map.tiles[x, y] != tileState[x, y]) SetTileSprite(x, y, bi);
                     if (map.visible[x, y])
                     {
-                        float d = Mathf.Sqrt((x - p.x) * (x - p.x) + (y - p.y) * (y - p.y));
+                        float d = Vector2.Distance(new Vector2(x, y), p.pos);
                         float l = Mathf.Lerp(1f, 0.55f, d / (radius + 1));
                         if (map.tiles[x, y] == Tile.Lava) l = 1f;
                         sr.enabled = true;
@@ -229,29 +246,33 @@ namespace Depthbound
                     v.barBg = NewSprite("barbg", v.go.transform, SpriteFactory.White, 10);
                     v.barFill = NewSprite("bar", v.go.transform, SpriteFactory.White, 11);
                     v.barBg.color = new Color(0, 0, 0, 0.8f);
-                    v.pos = new Vector3(a.x, a.y, 0);
                     views[a] = v;
                 }
-                var target = new Vector3(a.x, a.y, 0);
-                v.pos = Vector3.Lerp(v.pos, target, 1f - Mathf.Exp(-Time.deltaTime * 22f));
-                if ((v.pos - target).sqrMagnitude > 25) v.pos = target;
-                v.go.transform.position = v.pos;
-                v.sr.transform.localScale = Vector3.one * a.scale;
-                v.sr.transform.localPosition = new Vector3(0, (a.scale - 1f) * 0.4f, 0);
-                bool vis = a == world.player || map.visible[a.x, a.y];
+                v.go.transform.position = new Vector3(a.pos.x, a.pos.y, -a.pos.y * 0.001f);
+                bool vis = a == world.player || (map.InBounds(a.x, a.y) && map.visible[a.x, a.y]);
                 v.go.SetActive(vis);
                 if (!vis) continue;
 
+                v.sr.transform.localScale = Vector3.one * a.scale;
+                v.sr.flipX = a.facing.x < -0.1f;
                 v.aura.color = AuraColor(a);
+                var mon = a as Monster;
+                float bob = 0;
+                bool moving = a == world.player ? world.player.moveInput.sqrMagnitude > 0 : (mon != null && mon.moveDir.sqrMagnitude > 0);
+                if (moving) bob = Mathf.Abs(Mathf.Sin(Time.time * 14f + a.id)) * 0.06f;
+                v.sr.transform.localPosition = new Vector3(0, (a.scale - 1f) * 0.4f + bob, 0);
+
                 Color tint = Color.white;
-                if (a.Has(StatusType.Freeze)) tint = new Color(0.55f, 0.8f, 1f);
+                if (mon != null && mon.windup >= 0) tint = Color.Lerp(Color.white, new Color(1f, 0.25f, 0.2f), 0.5f + 0.5f * Mathf.Sin(Time.time * 40f));
+                else if (a.Has(StatusType.Freeze)) tint = new Color(0.55f, 0.8f, 1f);
                 else if (a.Has(StatusType.Burn)) tint = Color.Lerp(Color.white, new Color(1f, 0.55f, 0.3f), 0.5f + 0.5f * Mathf.Sin(Time.time * 12f));
                 else if (a.Has(StatusType.Poison)) tint = new Color(0.7f, 1f, 0.6f);
                 else if (a.Has(StatusType.Chill)) tint = new Color(0.75f, 0.9f, 1f);
                 else if (a.Has(StatusType.Stun)) tint = new Color(1f, 1f, 0.6f);
+                if (a is Player pp && pp.Dodging) tint.a = 0.45f;
                 v.sr.color = tint;
 
-                bool showBar = a != world.player && (a.life < a.MaxLife || (a is Monster mm && mm.rank > 0) || a.faction == Faction.Player);
+                bool showBar = a != world.player && (a.life < a.MaxLife || (mon != null && mon.rank > 0) || a.faction == Faction.Player);
                 v.barBg.enabled = v.barFill.enabled = showBar;
                 if (showBar)
                 {
@@ -264,7 +285,7 @@ namespace Depthbound
                     v.barFill.color = a.faction == Faction.Player ? new Color(0.3f, 0.9f, 0.4f) : (a.shield > 0 ? new Color(0.8f, 0.8f, 1f) : new Color(0.9f, 0.15f, 0.15f));
                 }
             }
-            // Remove views of dead / departed actors with a short fade.
+            // Fade out views of dead / departed actors.
             var gone = views.Where(kv => kv.Key.dead || !world.actors.Contains(kv.Key)).ToList();
             foreach (var kv in gone)
             {
@@ -276,6 +297,26 @@ namespace Depthbound
                 if (v.barFill) v.barFill.enabled = false;
                 if (v.fade <= 0) { Destroy(v.go); views.Remove(kv.Key); }
             }
+        }
+
+        void UpdateProjectiles()
+        {
+            var map = world.map;
+            foreach (var p in world.projectiles)
+            {
+                if (!projViews.TryGetValue(p, out var sr))
+                {
+                    sr = NewSprite("proj", fxRoot, dotSprite, 15);
+                    projViews[p] = sr;
+                }
+                int tx = Mathf.RoundToInt(p.pos.x), ty = Mathf.RoundToInt(p.pos.y);
+                sr.enabled = map.InBounds(tx, ty) && map.visible[tx, ty];
+                sr.transform.position = new Vector3(p.pos.x, p.pos.y, 0);
+                sr.transform.localScale = Vector3.one * p.size * 1.6f;
+                sr.color = p.color;
+            }
+            var dead = projViews.Keys.Where(k => k.dead || !world.projectiles.Contains(k)).ToList();
+            foreach (var k in dead) { Destroy(projViews[k].gameObject); projViews.Remove(k); }
         }
 
         void UpdateItems()
@@ -305,6 +346,12 @@ namespace Depthbound
             for (int i = used; i < itemPool.Count; i++) itemPool[i].gameObject.SetActive(false);
         }
 
+        bool Visible(Vector2 p)
+        {
+            int x = Mathf.RoundToInt(p.x), y = Mathf.RoundToInt(p.y);
+            return world.map.InBounds(x, y) && world.map.visible[x, y];
+        }
+
         void ProcessFxEvents()
         {
             var map = world.map;
@@ -313,40 +360,48 @@ namespace Depthbound
                 switch (e.kind)
                 {
                     case FxKind.Projectile:
-                    {
-                        if (!map.visible[e.a.x, e.a.y] && !map.visible[e.b.x, e.b.y]) break;
-                        float dist = Vector2Int.Distance(e.a, e.b);
-                        SpawnFx(new Vector3(e.a.x, e.a.y), new Vector3(e.b.x, e.b.y), e.color, 0.3f, 0.05f + dist * 0.025f, 1f, true);
+                        if (!Visible(e.a) && !Visible(e.b)) break;
+                        SpawnFx(e.a, e.b, e.color, 0.3f, 0.05f + Vector2.Distance(e.a, e.b) * 0.02f, 1f, true);
                         break;
-                    }
                     case FxKind.Burst:
-                        for (int dx = -e.radius; dx <= e.radius; dx++)
-                            for (int dy = -e.radius; dy <= e.radius; dy++)
+                    {
+                        int r = Mathf.CeilToInt(e.radius);
+                        int cx = Mathf.RoundToInt(e.a.x), cy = Mathf.RoundToInt(e.a.y);
+                        for (int dx = -r; dx <= r; dx++)
+                            for (int dy = -r; dy <= r; dy++)
                             {
-                                int x = e.a.x + dx, y = e.a.y + dy;
+                                int x = cx + dx, y = cy + dy;
                                 if (!map.InBounds(x, y) || !map.visible[x, y] || !map.Transparent(x, y)) continue;
-                                SpawnFx(new Vector3(x, y), new Vector3(x, y), e.color, 0.95f, 0.35f, 0.5f, false);
+                                if (Vector2.Distance(new Vector2(x, y), e.a) > e.radius + 0.3f) continue;
+                                SpawnFx(new Vector2(x, y), new Vector2(x, y), e.color, 0.95f, 0.35f, 0.45f, false);
                             }
                         break;
+                    }
                     case FxKind.Line:
-                        foreach (var p in DungeonMap.Line(e.a, e.b))
-                            if (map.InBounds(p.x, p.y) && map.visible[p.x, p.y]) SpawnFx(new Vector3(p.x, p.y), new Vector3(p.x, p.y), e.color, 0.35f, 0.3f, 0.9f, false);
+                    {
+                        float len = Vector2.Distance(e.a, e.b);
+                        for (float d = 0; d <= len; d += 0.4f)
+                        {
+                            var p = Vector2.Lerp(e.a, e.b, len > 0 ? d / len : 0);
+                            if (Visible(p)) SpawnFx(p, p, e.color, 0.3f, 0.3f, 0.9f, false);
+                        }
                         break;
+                    }
                     case FxKind.Flash:
-                        if (map.InBounds(e.a.x, e.a.y) && map.visible[e.a.x, e.a.y]) SpawnFx(new Vector3(e.a.x, e.a.y), new Vector3(e.a.x, e.a.y), e.color, 0.9f, 0.15f, 0.55f, false);
+                        if (Visible(e.a)) SpawnFx(e.a, e.a, e.color, 0.8f, 0.15f, 0.55f, false);
                         break;
                     case FxKind.Text:
-                        if (map.InBounds(e.a.x, e.a.y) && map.visible[e.a.x, e.a.y])
-                            texts.Add(new FloatingText { pos = new Vector3(e.a.x + Random.Range(-0.25f, 0.25f), e.a.y + 0.3f), text = e.text, color = e.color, size = e.size });
+                        if (Visible(e.a))
+                            texts.Add(new FloatingText { pos = new Vector3(e.a.x + Random.Range(-0.25f, 0.25f), e.a.y + 0.35f), text = e.text, color = e.color, size = e.size });
                         break;
                 }
             }
             Fx.Pending.Clear();
         }
 
-        void SpawnFx(Vector3 a, Vector3 b, Color c, float scale, float dur, float alpha, bool moves)
+        void SpawnFx(Vector2 a, Vector2 b, Color c, float scale, float dur, float alpha, bool moves)
         {
-            var sr = NewSprite("fx", fxRoot, SpriteFactory.White, 20);
+            var sr = NewSprite("fx", fxRoot, moves ? dotSprite : SpriteFactory.White, 20);
             sr.transform.position = a;
             sr.transform.localScale = Vector3.one * scale;
             c.a = alpha;
@@ -385,14 +440,15 @@ namespace Depthbound
                 if (Mathf.Abs(scroll) > 0.01f) zoom = Mathf.Clamp(zoom - scroll * 0.8f, 4.5f, 16f);
             }
             cam.orthographicSize = Mathf.Lerp(cam.orthographicSize, zoom, 1f - Mathf.Exp(-Time.deltaTime * 12f));
-            Vector3 focus = views.TryGetValue(world.player, out var v) ? v.pos : new Vector3(world.player.x, world.player.y);
-            var target = new Vector3(focus.x, focus.y, -10);
-            cam.transform.position = Vector3.Lerp(cam.transform.position, target, 1f - Mathf.Exp(-Time.deltaTime * 10f));
+            var p = world.player.pos;
+            var target = new Vector3(p.x, p.y, -10);
+            cam.transform.position = Vector3.Lerp(cam.transform.position, target, 1f - Mathf.Exp(-Time.deltaTime * 12f));
         }
 
         void UpdateHover()
         {
             var wp = cam.ScreenToWorldPoint(Input.mousePosition);
+            MouseWorld = new Vector2(wp.x, wp.y);
             MouseTile = new Vector2Int(Mathf.RoundToInt(wp.x), Mathf.RoundToInt(wp.y));
             var map = world.map;
             bool show = map.InBounds(MouseTile.x, MouseTile.y) && map.explored[MouseTile.x, MouseTile.y] && !(GameManager.Instance.ui?.MouseOverUI() ?? false);
@@ -400,14 +456,16 @@ namespace Depthbound
             if (show)
             {
                 hover.transform.position = new Vector3(MouseTile.x, MouseTile.y, 0);
-                var a = world.ActorAt(MouseTile);
-                hover.color = a != null && a.IsHostileTo(world.player) && map.visible[a.x, a.y] ? new Color(1f, 0.3f, 0.3f, 0.8f) : new Color(1f, 1f, 1f, 0.35f);
+                var a = world.ActorNear(MouseWorld, 0.4f);
+                bool enemy = a != null && a.IsHostileTo(world.player) && Visible(a.pos);
+                if (enemy) hover.transform.position = new Vector3(a.pos.x, a.pos.y, 0);
+                hover.color = enemy ? new Color(1f, 0.3f, 0.3f, 0.8f) : DungeonMap.IsInteractable(map.Get(MouseTile.x, MouseTile.y)) ? new Color(1f, 0.9f, 0.4f, 0.7f) : new Color(1f, 1f, 1f, 0.25f);
             }
         }
 
-        public Vector2 WorldToGui(Vector3 world, float guiScale)
+        public Vector2 WorldToGui(Vector3 worldPos, float guiScale)
         {
-            var sp = cam.WorldToScreenPoint(world);
+            var sp = cam.WorldToScreenPoint(worldPos);
             return new Vector2(sp.x / guiScale, (Screen.height - sp.y) / guiScale);
         }
     }

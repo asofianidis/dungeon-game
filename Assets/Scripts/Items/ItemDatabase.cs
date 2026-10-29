@@ -208,6 +208,8 @@ namespace Depthbound
             Af("of Protection", false, StatType.DamageReduction, 2, 5, 0.003f, K(ItemKind.Chest, ItemKind.Offhand, ItemKind.Belt), 6, 8);
             Af("of Learning", false, StatType.XpBonus, 3, 8, 0.004f, K(ItemKind.Helm, ItemKind.Amulet, ItemKind.Ring), 5);
             Af("of the Thorn", false, StatType.Thorns, 3, 8, 0.12f, K(ItemKind.Boots, ItemKind.Belt, ItemKind.Helm), 5);
+            Af("of Speed", false, StatType.ActionSpeed, 4, 9, 0.004f, K(ItemKind.Gloves, ItemKind.Weapon, ItemKind.Ring, ItemKind.Amulet), 7, 3);
+            Af("of the Wind", false, StatType.MoveSpeed, 5, 12, 0.003f, K(ItemKind.Boots), 14);
             Af("of Power", false, StatType.FlatAttackDamage, 1, 3, 0.1f, K(ItemKind.Amulet, ItemKind.Gloves, ItemKind.Offhand), 6);
 
             // ---------------- LEGENDARIES ----------------
@@ -236,7 +238,7 @@ namespace Depthbound
             U("ironclad", "Ironclad Will", "plate", "Unmoved. Unbroken.")
                 .P(ItemPower.Key(Keystone.Juggernaut)).P(ItemPower.Stat(StatType.ArmorPct, 40)).P(ItemPower.Stat(StatType.MaxLifePct, 15));
             U("berserk_ring", "Ring of Fury", "ring", "Rage is a gift.")
-                .P(ItemPower.Key(Keystone.Berserker)).P(ItemPower.Stat(StatType.DoubleStrike, 15)).P(ItemPower.Stat(StatType.AttackDamage, 15));
+                .P(ItemPower.Key(Keystone.Berserker)).P(ItemPower.Stat(StatType.ActionSpeed, 15)).P(ItemPower.Stat(StatType.AttackDamage, 15));
             U("shatterglass", "Shatterglass Gauntlets", "gauntlets", "Fragile things are made to break.")
                 .P(ItemPower.Key(Keystone.Shatter)).P(ItemPower.Grant("frost_shard", 4)).P(ItemPower.Stat(StatType.ColdDamage, 15));
             U("flamecrown", "Crown of Flames", "circlet", "A crown that is never cool.")
@@ -244,7 +246,7 @@ namespace Depthbound
             U("soulreaper", "Soulreaper", "halberd", "It harvests more than wheat.")
                 .P(ItemPower.Proc(ProcTrigger.OnHit, 12, "proc_shadowburst", 5)).P(ItemPower.Stat(StatType.LifeOnKill, 10)).P(ItemPower.Stat(StatType.ManaOnKill, 8)).P(ItemPower.Grant("as_deathmark", 3));
             U("wraithstep", "Wraithstep", "sandals", "You were never there.")
-                .P(ItemPower.Grant("void_blink", 5)).P(ItemPower.Stat(StatType.EvasionPct, 30)).P(ItemPower.Stat(StatType.DoubleStrike, 10));
+                .P(ItemPower.Grant("void_blink", 5)).P(ItemPower.Stat(StatType.EvasionPct, 30)).P(ItemPower.Stat(StatType.MoveSpeed, 25));
             U("manypaths", "Sigil of Many Paths", "band", "All roads lead deeper.")
                 .P(ItemPower.Stat(StatType.AllSkills, 1)).P(ItemPower.Stat(StatType.AllAttributes, 8));
             U("mountain", "Heart of the Mountain", "titan_belt", "Endure.")

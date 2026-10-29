@@ -77,7 +77,7 @@ namespace Depthbound
             S("blade_cleave", "Cleave", School.Blade, 1, "A wide swing that hits every adjacent enemy.")
                 .Act(Targeting.Melee, 1, 1).Cost(4, 0.5f, 0).Weap(105, 10);
             S("blade_mastery", "Blade Mastery", School.Blade, 2, "Years of drills sharpen every strike.")
-                .Passive().Mod(StatType.AttackDamage, 6, 6).Mod(StatType.Accuracy, 5, 5);
+                .Passive().Mod(StatType.AttackDamage, 6, 6).Mod(StatType.Accuracy, 5, 5).Mod(StatType.ActionSpeed, 2, 1.5f);
             S("blade_lunge", "Lunge", School.Blade, 3, "Leap to an enemy and run them through.")
                 .Act(Targeting.Dash, 4).Cost(6, 0.5f, 4).Weap(150, 15);
             S("blade_riposte", "Riposte", School.Blade, 4, "Turn an enemy's attack into an opening.")
@@ -99,7 +99,7 @@ namespace Depthbound
             S("war_juggernaut", "Unstoppable", School.Warcry, 5, "Nothing can stop your advance.")
                 .Passive().Mod(StatType.DamageReduction, 2, 1.5f).Mod(StatType.Thorns, 4, 4).Mod(StatType.LifeRegen, 0.5f, 0.4f).Key(Keystone.Juggernaut);
             S("war_avatar", "Avatar of War", School.Warcry, 6, "Become an unstoppable engine of destruction.")
-                .Act(Targeting.Self).Cost(20, 1, 30).Buff(8).Mod(StatType.AttackDamage, 40, 6).Mod(StatType.DamageReduction, 15, 1.5f).Mod(StatType.LifeSteal, 4, 0.5f);
+                .Act(Targeting.Self).Cost(20, 1, 30).Buff(8).Mod(StatType.AttackDamage, 40, 6).Mod(StatType.DamageReduction, 15, 1.5f).Mod(StatType.LifeSteal, 4, 0.5f).Mod(StatType.ActionSpeed, 20, 2);
 
             // ================= ASSASSINATION =================
             S("as_backstab", "Backstab", School.Assassination, 1, "Strike a weak point with lethal precision.")
@@ -107,7 +107,7 @@ namespace Depthbound
             S("as_envenom", "Envenom", School.Assassination, 2, "Coat your blades in venom.")
                 .Passive().Mod(StatType.PoisonDamage, 8, 6).Proc(ProcTrigger.OnHit, 20, 4, "proc_venom");
             S("as_shadowstep", "Shadow Step", School.Assassination, 3, "Vanish and reappear, primed to strike.")
-                .Act(Targeting.Blink, 5).Cost(6, 0.4f, 5).Buff(3).Mod(StatType.CritChance, 30, 5);
+                .Act(Targeting.Blink, 5).Cost(6, 0.4f, 5).Buff(3).Mod(StatType.CritChance, 30, 5).Mod(StatType.MoveSpeed, 30, 3);
             S("as_fan", "Fan of Knives", School.Assassination, 4, "Hurl knives in every direction.")
                 .Act(Targeting.Self, 0, 2).Cost(9, 0.8f, 2).Weap(80, 10).Status(StatusType.Bleed, 40, 4);
             S("as_lethality", "Lethality", School.Assassination, 5, "Know exactly where to cut.")
@@ -121,7 +121,7 @@ namespace Depthbound
             S("arc_multishot", "Multishot", School.Archery, 2, "Loose several arrows at once.")
                 .Act(Targeting.Projectile, 7).Cost(6, 0.5f, 1).Weap(75, 8).Proj(3);
             S("arc_eagleeye", "Eagle Eye", School.Archery, 3, "Nothing escapes your sight.")
-                .Passive().Mod(StatType.Accuracy, 10, 10).Mod(StatType.CritChance, 2, 1.5f).Mod(StatType.LightRadius, 1, 0.2f);
+                .Passive().Mod(StatType.Accuracy, 10, 10).Mod(StatType.CritChance, 2, 1.5f).Mod(StatType.LightRadius, 1, 0.2f).Mod(StatType.MoveSpeed, 3, 1.5f);
             S("arc_rain", "Rain of Arrows", School.Archery, 4, "Blot out the sky.")
                 .Act(Targeting.Ground, 7, 2).Cost(12, 1, 4).Weap(95, 10);
             S("arc_explosive", "Explosive Arrow", School.Archery, 5, "An arrow tipped with alchemical fire.")
@@ -219,7 +219,7 @@ namespace Depthbound
             S("blood_thirst", "Bloodthirst", School.Blood, 2, "Drink deep of your enemies.")
                 .Passive().Mod(StatType.LifeSteal, 1.5f, 1f).Mod(StatType.AttackDamage, 3, 3);
             S("blood_frenzy", "Frenzy", School.Blood, 3, "Enter a frenzied rage.")
-                .Act(Targeting.Self).LifeCost(10).Cost(0, 0, 12).Buff(8).Mod(StatType.DoubleStrike, 15, 4).Mod(StatType.AttackDamage, 10, 4);
+                .Act(Targeting.Self).LifeCost(10).Cost(0, 0, 12).Buff(8).Mod(StatType.DoubleStrike, 15, 4).Mod(StatType.AttackDamage, 10, 4).Mod(StatType.ActionSpeed, 15, 3);
             S("blood_pact", "Blood Pact", School.Blood, 4, "Pay for power with your own life.")
                 .Passive().Mod(StatType.SpellDamage, 6, 5).Mod(StatType.AttackDamage, 6, 5).Mod(StatType.MaxLifePct, 4, 2).Key(Keystone.BloodMagic);
             S("blood_nova", "Blood Nova", School.Blood, 5, "Your blood erupts outward as a weapon.")

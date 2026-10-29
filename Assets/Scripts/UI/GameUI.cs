@@ -20,7 +20,7 @@ namespace Depthbound
 
         GUIStyle box, label, small, title, header, button, tip, center, outline;
         Texture2D white, panelBg, minimap;
-        int minimapTurn = -1, minimapVersion = -1;
+        int minimapFov = -1, minimapVersion = -1;
 
         string tipText;
         Item tipItem, tipCompare;
@@ -33,7 +33,8 @@ namespace Depthbound
         GameManager GM => GameManager.Instance;
         World W => GM.world;
 
-        public bool BlocksGameInput => shopOpen || panel == Panel.Pause || panel == Panel.Help;
+        /// <summary>The simulation pauses while any menu is open.</summary>
+        public bool PausesGame => shopOpen || panel != Panel.None;
 
         public void ResetForRun() { panel = Panel.None; shopOpen = false; }
         public void OpenShop() { shopOpen = true; panel = Panel.Inventory; }
@@ -141,6 +142,8 @@ namespace Depthbound
         }
 
         static string Hex(Color c) => ColorUtility.ToHtmlStringRGB(c);
+        static string Clock(float seconds) => $"{(int)(seconds / 60)}:{(int)(seconds % 60):00}";
+        static string Secs(float s) => s < 10 ? s.ToString("0.0") : Mathf.CeilToInt(s).ToString();
         static string Col(string text, Color c) => $"<color=#{Hex(c)}>{text}</color>";
 
         bool Hover(Rect r) => r.Contains(Event.current.mousePosition);
@@ -351,7 +354,7 @@ namespace Depthbound
                 sb.AppendLine($"Deepest floor: <b>{s.deepest}</b>");
                 sb.AppendLine($"Monsters slain: {s.kills}    Bosses: {s.bossKills}");
                 sb.AppendLine($"Gold earned: {s.goldEarned}    Legendaries found: {s.legendaries}");
-                sb.AppendLine($"Turns survived: {s.turns}");
+                sb.AppendLine($"Time survived: {Clock(s.time)}");
                 sb.AppendLine();
                 sb.AppendLine($"<size=20><color=#d8a0ff>+{GM.essenceAwarded} Soul Essence</color></size>  (total {GM.meta.essence})");
                 if (GM.corruptionUnlocked) sb.AppendLine($"\n<color=#ff8844><b>Corruption {GM.meta.maxCorruption} unlocked!</b></color>");
@@ -374,6 +377,7 @@ namespace Depthbound
             DrawLog();
             DrawBottom();
             DrawMenuButtons();
+            DrawPrompt();
             switch (panel)
             {
                 case Panel.Inventory: DrawInventory(); if (shopOpen) DrawShop(); break;
@@ -391,18 +395,16 @@ namespace Depthbound
                 var p = GM.view.WorldToGui(t.pos, scale);
                 var st = new GUIStyle(outline) { fontSize = Mathf.RoundToInt(16 * t.size * Mathf.Clamp(9f / GM.view.zoom, 0.7f, 1.6f)) };
                 var c = t.color; c.a = Mathf.Clamp01(1.3f - t.t);
-                Shadowed(new Rect(p.x - 60, p.y - 12, 120, 24), t.text, st, c);
+                Shadowed(new Rect(p.x - 120, p.y - 14, 240, 28), t.text, st, c);
             }
         }
 
         void DrawHoverInfo()
         {
             if (MouseOverUI()) return;
-            var t = GM.view.MouseTile;
             var map = W.map;
-            if (!map.InBounds(t.x, t.y) || !map.visible[t.x, t.y]) return;
-            var a = W.ActorAt(t);
-            if (a == null || a == W.player) return;
+            var a = W.ActorNear(GM.view.MouseWorld, 0.4f);
+            if (a == null || a == W.player || !map.visible[a.x, a.y]) return;
             var m = a as Monster;
             Color nameCol = m == null ? Color.white : m.rank == 3 ? new Color(1f, 0.4f, 0.3f) : m.rank == 2 ? new Color(1f, 0.85f, 0.3f) : m.rank == 1 ? new Color(0.5f, 0.7f, 1f) : Color.white;
             if (a.faction == Faction.Player) nameCol = new Color(0.5f, 1f, 0.6f);
@@ -421,7 +423,7 @@ namespace Depthbound
             GUI.Label(new Rect(r.x, r.y, r.width, 22), $"<b>Depth {w.depth}</b>  <color=#99aacc>{w.map.biome.name}</color>{(w.corruption > 0 ? $"  <color=#ff7744>C{w.corruption}</color>" : "")}", label);
             GUI.Label(new Rect(r.x, r.y + 22, r.width, 22), $"Level {p.level} {p.cls.name}", small);
             Bar(new Rect(r.x, r.y + 44, r.width, 12), p.xp / (float)p.XpToNext, new Color(0.7f, 0.55f, 1f), null);
-            GUI.Label(new Rect(r.x, r.y + 60, r.width, 22), $"<color=#ffd040>{p.gold} gold</color>    Kills {w.stats.kills}    Turn {w.turn}", small);
+            GUI.Label(new Rect(r.x, r.y + 60, r.width, 22), $"<color=#ffd040>{p.gold} gold</color>    Kills {w.stats.kills}    Time {Clock(w.stats.time)}", small);
             if (w.IsBossFloor && w.map.stairsSealed) GUI.Label(new Rect(r.x, r.y + 78, r.width, 22), "<color=#ff6644>A guardian seals the stairs</color>", small);
         }
 
@@ -431,11 +433,11 @@ namespace Depthbound
             if (minimap == null || minimap.width != map.w || minimap.height != map.h)
             {
                 minimap = new Texture2D(map.w, map.h, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point };
-                minimapTurn = -1;
+                minimapFov = -1;
             }
-            if (minimapTurn != w.turn || minimapVersion != w.floorVersion || Time.frameCount % 30 == 0)
+            if (minimapFov != w.fovVersion || minimapVersion != w.floorVersion || Time.frameCount % 6 == 0)
             {
-                minimapTurn = w.turn; minimapVersion = w.floorVersion;
+                minimapFov = w.fovVersion; minimapVersion = w.floorVersion;
                 var px = new Color32[map.w * map.h];
                 for (int x = 0; x < map.w; x++)
                     for (int y = 0; y < map.h; y++)
@@ -502,8 +504,9 @@ namespace Depthbound
             // Statuses & buffs
             var parts = new List<string>();
             foreach (var g in p.statuses.GroupBy(s => s.type))
-                parts.Add(Col($"{g.Key}{(g.Count() > 1 ? " x" + g.Count() : "")} {g.Max(s => s.turns)}", Combat.StatusColor(g.Key)));
-            foreach (var b in p.buffs) parts.Add(Col($"{b.name} {b.turns}", new Color(0.6f, 0.9f, 1f)));
+                parts.Add(Col($"{g.Key}{(g.Count() > 1 ? " x" + g.Count() : "")} {Mathf.CeilToInt(g.Max(s => s.remaining))}s", Combat.StatusColor(g.Key)));
+            foreach (var b in p.buffs) parts.Add(Col($"{b.name} {Mathf.CeilToInt(b.remaining)}s", new Color(0.6f, 0.9f, 1f)));
+            if (p.dodgeCooldown > 0) parts.Add(Col($"Dodge {Secs(p.dodgeCooldown)}", new Color(0.7f, 0.7f, 0.8f)));
             if (parts.Count > 0) Shadowed(new Rect(x0, y0 - 58, hw + 200, 22), string.Join("   ", parts), new GUIStyle(small) { wordWrap = false }, Color.white);
 
             for (int i = 0; i < Player.HotbarSize; i++)
@@ -517,18 +520,19 @@ namespace Depthbound
                 {
                     int rank = p.SkillRank(id);
                     Icon(new Rect(r.x + 3, r.y + 3, slot - 6, slot - 6), SpriteFactory.SkillIcon(def));
-                    int cd = p.Cooldown(id);
+                    float cd = p.Cooldown(id);
                     float cost = SkillExecutor.Cost(p, def, Mathf.Max(1, rank), out bool life);
                     bool cantAfford = life ? p.life <= cost + 1 : p.mana < cost;
                     if (rank <= 0) Rect(r, new Color(0, 0, 0, 0.75f));
                     else if (cd > 0)
                     {
                         Rect(r, new Color(0, 0, 0, 0.6f));
-                        GUI.Label(r, $"<b>{cd}</b>", new GUIStyle(center) { fontSize = 20 });
+                        Rect(new Rect(r.x, r.y, r.width, r.height * Mathf.Clamp01(cd / Mathf.Max(0.1f, SkillExecutor.CooldownFor(p, def)))), new Color(0, 0, 0, 0.35f));
+                        GUI.Label(r, $"<b>{Secs(cd)}</b>", new GUIStyle(center) { fontSize = 18 });
                     }
                     else if (cantAfford) Rect(r, new Color(0.1f, 0.1f, 0.5f, 0.5f));
                     if (Hover(r)) tipText = $"<b>{def.name}</b>  (Rank {rank})\n<color=#aaaaaa>{def.school} - {def.TargetingLabel()}</color>\n\n{def.Describe(rank, p)}";
-                    if (GUI.Button(r, GUIContent.none, GUIStyle.none)) W.PlayerUseSkill(i, null);
+                    if (GUI.Button(r, GUIContent.none, GUIStyle.none)) W.PlayerUseSkill(i, p.pos + p.facing * 3f);
                 }
                 Shadowed(new Rect(r.x + 3, r.y + 1, 20, 18), (i + 1).ToString(), small, new Color(1f, 0.9f, 0.6f));
             }
@@ -547,6 +551,15 @@ namespace Depthbound
             if (GUI.Button(mp, GUIContent.none, GUIStyle.none)) W.QuaffMana();
             if (Hover(hp)) tipText = "Health Potion (R)\nRestores 45% of maximum life and cures damage over time.";
             if (Hover(mp)) tipText = "Mana Potion (F)\nRestores 60% of maximum mana.";
+        }
+
+        void DrawPrompt()
+        {
+            if (PausesGame && panel != Panel.Pause)
+                Shadowed(new Rect(0, 100, VW, 24), "<b>PAUSED</b>  <size=12>(close the panel to resume)</size>", new GUIStyle(center) { fontSize = 16 }, new Color(1f, 0.85f, 0.5f));
+            var hint = W.InteractHint();
+            if (hint != null && !PausesGame)
+                Shadowed(new Rect(0, VH - 175, VW, 24), hint, new GUIStyle(center) { fontSize = 16 }, new Color(1f, 0.9f, 0.6f));
         }
 
         void DrawMenuButtons()
@@ -754,7 +767,7 @@ namespace Depthbound
             var off = new StringBuilder();
             off.AppendLine("<b><color=#ffaa77>Offense</color></b>");
             off.AppendLine($"Weapon damage: <b>{Mathf.RoundToInt(p.weaponMin)}-{Mathf.RoundToInt(p.weaponMax)}</b> {Combat.Convert(p, p.attackElement)}{(p.attackRange > 1 ? $" (range {p.attackRange})" : "")}");
-            foreach (var s in new[] { StatType.FlatAttackDamage, StatType.AttackDamage, StatType.SpellDamage, StatType.CritChance, StatType.CritDamage, StatType.Accuracy, StatType.DoubleStrike, StatType.StatusChance, StatType.DotDamage, StatType.LifeSteal, StatType.CooldownReduction, StatType.ManaCostReduction, StatType.ExtraProjectiles, StatType.AreaRadius, StatType.SummonDamage, StatType.SummonLife })
+            foreach (var s in new[] { StatType.FlatAttackDamage, StatType.AttackDamage, StatType.SpellDamage, StatType.ActionSpeed, StatType.CritChance, StatType.CritDamage, StatType.Accuracy, StatType.DoubleStrike, StatType.StatusChance, StatType.DotDamage, StatType.LifeSteal, StatType.CooldownReduction, StatType.ManaCostReduction, StatType.ExtraProjectiles, StatType.AreaRadius, StatType.SummonDamage, StatType.SummonLife })
                 if (Mathf.Abs(p.Get(s)) > 0.01f || s == StatType.AttackDamage || s == StatType.SpellDamage || s == StatType.CritChance) off.AppendLine(Line(s));
             foreach (var s in new[] { StatType.PhysicalDamage, StatType.FireDamage, StatType.ColdDamage, StatType.LightningDamage, StatType.PoisonDamage, StatType.HolyDamage, StatType.ShadowDamage })
                 if (Mathf.Abs(p.Get(s)) > 0.01f) off.AppendLine(Line(s));
@@ -772,7 +785,7 @@ namespace Depthbound
             if (p.Get(StatType.Thorns) > 0) def.AppendLine(Line(StatType.Thorns));
             def.AppendLine();
             def.AppendLine("<b><color=#ddcc66>Utility</color></b>");
-            foreach (var s in new[] { StatType.MagicFind, StatType.GoldFind, StatType.LightRadius, StatType.XpBonus, StatType.LifeOnKill, StatType.ManaOnKill })
+            foreach (var s in new[] { StatType.MoveSpeed, StatType.MagicFind, StatType.GoldFind, StatType.LightRadius, StatType.XpBonus, StatType.LifeOnKill, StatType.ManaOnKill })
                 if (Mathf.Abs(p.Get(s)) > 0.01f) def.AppendLine(Line(s));
 
             GUI.Label(new Rect(r.x + 330, r.y, 300, r.height - 120), def.ToString(), small);
@@ -791,11 +804,12 @@ namespace Depthbound
             var r = Box(new Rect((VW - 760) / 2, 70, 760, 700), "How to Play");
             string text =
                 "<b>Goal</b>: Dive as deep as you can. Every 5th floor is guarded by a boss that seals the stairs. Biomes cycle and grow deadlier forever.\n\n" +
-                "<b>Movement</b>: WASD / Arrows / Numpad. Diagonals: Q E Z C or Numpad 7 9 1 3. Walk into enemies to attack. Click a tile to travel there.\n" +
-                "<b>Wait</b>: Space or Numpad 5.    <b>Descend</b>: Enter or > on the stairs.\n" +
-                "<b>Skills</b>: 1-8 cast hotbar skills at the mouse cursor (or the nearest enemy). Right-click casts slot 1.\n" +
-                "<b>Potions</b>: R = health, F = mana.    <b>Zoom</b>: mouse wheel.\n" +
-                "<b>Panels</b>: I inventory, K skills, P hero sheet, H help, Esc menu.\n\n" +
+                "<b>Move</b>: WASD / Arrows.    <b>Dodge roll</b>: Space (brief invulnerability).\n" +
+                "<b>Attack</b>: hold Left Mouse toward the cursor. Melee hits the enemy you face; bows and wands fire projectiles.\n" +
+                "<b>Skills</b>: hold 1-8 to cast at the cursor (or the nearest enemy). Right Mouse casts slot 1.\n" +
+                "<b>Interact</b>: E (chests, shrines, fountains, merchants, stairs) or click them.    <b>Potions</b>: R health, F mana.\n" +
+                "<b>Panels</b>: I inventory, K skills, P hero sheet, H help, Esc menu. The game pauses while a panel is open.\n" +
+                "Enemies flash red before a melee swing - step or roll away to make it miss. Projectiles can be dodged.\n\n" +
                 "<b>Building a hero</b>\n" +
                 "- Every level grants 5 attribute points and 1 skill point. Any class can learn any of the 12 skill schools.\n" +
                 "- Higher tiers in a school need points invested in that school first.\n" +

@@ -11,7 +11,12 @@ namespace Depthbound
         public int rank;              // 0 normal, 1 champion, 2 rare elite, 3 boss
         public bool awake;
         public bool isSummon;
-        public int lifetime = -1;
+        public float lifetime = -1;
+
+        // Real-time AI state
+        public float thinkTimer, windup = -1;
+        public Actor windupTarget;
+        public Vector2 moveDir;
         public int skillRank = 1;
         public float lifeMult = 1, dmgMult = 1, xpValue;
         public StatusType onHit;
@@ -33,6 +38,7 @@ namespace Depthbound
             if (d.skills != null) skills.AddRange(d.skills);
             isBoss = d.boss;
             scale = d.boss ? 1.6f : d.scale;
+            radius = Mathf.Clamp(0.32f * scale, 0.22f, 0.48f);
         }
 
         public override int SkillRank(string id) => skillRank;

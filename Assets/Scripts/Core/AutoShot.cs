@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
 using System.IO;
-using System.Linq;
 using UnityEngine;
 
 namespace Depthbound
@@ -33,12 +32,9 @@ namespace Depthbound
         {
             Directory.CreateDirectory(dir);
             var gm = GameManager.Instance;
+            gm.autopilot = true;
             yield return Frames(30);
             Shot("1_title");
-            yield return Frames(5);
-            gm.state = GameState.ClassSelect;
-            yield return Frames(10);
-            Shot("2_classes");
             yield return Frames(5);
 
             gm.StartRun(ClassDatabase.Get("pyromancer"), 0, 4242, false);
@@ -48,42 +44,59 @@ namespace Depthbound
             for (int i = 0; i < 6; i++) p.AddToBackpack(ItemGenerator.Generate(rng, 8, 200, 1f));
             p.AddToBackpack(ItemGenerator.GenerateUnique(rng, ItemDatabase.Uniques[0], 8));
             p.GainXp(400);
+            p.LearnSkill(SkillDatabase.Get("fire_bolt"));
             yield return Frames(20);
-            Shot("3_start");
-            yield return Frames(5);
+            Shot("2_start");
 
-            // Wander toward unexplored space and fight whatever shows up.
-            for (int step = 0; step < 160 && !p.dead; step++)
+            // Spawn a small pack nearby and fight it for a couple of seconds.
+            foreach (var id in new[] { "skeleton", "skeleton", "skel_archer" })
             {
-                var e = w.NearestEnemy(6);
-                if (e != null) { if (!w.PlayerUseSkill(0, e.Pos)) w.PlayerAttackTarget(e); }
+                var spot = w.FindFreeNear(p.Pos + new Vector2Int(3, 0), 3);
+                if (spot == null) continue;
+                var m = w.CreateMonster(MonsterDatabase.Get(id), 2, Faction.Monster, 0);
+                m.Recalc(); m.life = m.MaxLife; m.awake = true;
+                w.Place(m, spot.Value);
+            }
+            float fight = 0; bool shot = false;
+            while (fight < 3f)
+            {
+                fight += Time.deltaTime;
+                var foe = w.NearestEnemy(8f);
+                if (foe != null && !w.PlayerUseSkill(0, foe.pos)) w.PlayerAttack(foe.pos);
+                if (!shot && fight > 0.9f && (w.projectiles.Count > 0 || fight > 1.5f)) { shot = true; Shot("3_combat"); }
+                yield return null;
+            }
+
+            // Run toward the stairs, fighting anything that shows up, for ~12 seconds of real time.
+            float elapsed = 0;
+            var stairsField = w.map.DistanceField(new[] { w.map.stairs }, true);
+            while (elapsed < 12f && !p.dead)
+            {
+                elapsed += Time.deltaTime;
+                if (p.LifePct < 0.5f) p.life = p.MaxLife;
+                var e = w.NearestEnemy(7f);
+                if (e != null)
+                {
+                    p.moveInput = Vector2.zero;
+                    if (!w.PlayerUseSkill(0, e.pos)) w.PlayerAttack(e.pos);
+                }
                 else
                 {
-                    var dist = w.map.DistanceField(new[] { w.map.stairs }, true);
-                    var best = Vector2Int.zero; int bd = dist[p.x, p.y];
-                    for (int dx = -1; dx <= 1; dx++)
-                        for (int dy = -1; dy <= 1; dy++)
-                            if (w.map.CanStep(p.x, p.y, dx, dy) && dist[p.x + dx, p.y + dy] < bd) { bd = dist[p.x + dx, p.y + dy]; best = new Vector2Int(dx, dy); }
-                    if (best == Vector2Int.zero || !w.PlayerMove(best.x, best.y)) w.PlayerWait();
+                    p.moveInput = w.SteerAlong(p, stairsField) ?? Vector2.zero;
                 }
-                if (p.LifePct < 0.5f) { p.life = p.MaxLife; }
-                yield return Frames(2);
-                if (step == 40) Shot("4_combat");
+                yield return null;
             }
-            yield return Frames(10);
-            Shot("5_explore");
+            p.moveInput = Vector2.zero;
+            yield return Frames(5);
+            Shot("4_explore");
             yield return Frames(5);
             gm.ui.DebugOpen(1);
             yield return Frames(5);
-            Shot("6_inventory");
+            Shot("5_inventory");
             yield return Frames(5);
             gm.ui.DebugOpen(2);
             yield return Frames(5);
-            Shot("7_skills");
-            yield return Frames(5);
-            gm.ui.DebugOpen(3);
-            yield return Frames(5);
-            Shot("8_hero");
+            Shot("6_skills");
             yield return Frames(10);
             Application.Quit();
         }

@@ -8,6 +8,10 @@ namespace Depthbound
     {
         static World W => World.Current;
 
+        /// <summary>Skill radii are authored in tiles; this converts them to a world-space radius.</summary>
+        public static float WorldRadius(int r) => r + 0.6f;
+        const float TargetSnap = 1.1f;
+
         public static float Cost(Actor c, SkillDef s, int rank, out bool usesLife)
         {
             usesLife = s.lifeCostPct > 0 || c.keystones.Contains(Keystone.BloodMagic);
@@ -16,53 +20,50 @@ namespace Depthbound
             return usesLife ? m * 1.2f : m;
         }
 
-        public static int CooldownFor(Actor c, SkillDef s)
+        public static float CooldownFor(Actor c, SkillDef s)
         {
             if (s.cooldown <= 0) return 0;
             float cdr = Mathf.Min(c.Get(StatType.CooldownReduction), 50f);
-            return Mathf.Max(1, Mathf.RoundToInt(s.cooldown * (1f - cdr / 100f)));
+            return Mathf.Max(0.5f, s.cooldown * (1f - cdr / 100f));
         }
 
-        static bool RequiresHostile(Targeting t) => t == Targeting.Melee || t == Targeting.Target || t == Targeting.Chain || t == Targeting.Dash;
+        static bool RequiresHostile(Targeting t) => t == Targeting.Target || t == Targeting.Chain || t == Targeting.Dash;
 
         /// <summary>Returns null if castable, otherwise a reason.</summary>
-        public static string CanCast(Actor c, SkillDef s, int rank, Vector2Int target)
+        public static string CanCast(Actor c, SkillDef s, int rank, Vector2 target)
         {
             if (rank <= 0) return "You don't know that skill";
             if (s.passive) return "Passive skill";
-            if (c.Cooldown(s.id) > 0) return $"{s.name} is on cooldown ({c.Cooldown(s.id)})";
+            if (c.Cooldown(s.id) > 0) return $"{s.name} is on cooldown";
             float cost = Cost(c, s, rank, out bool life);
             if (life ? c.life <= cost + 1 : c.mana < cost) return life ? "Not enough life" : "Not enough mana";
 
             var map = W.map;
-            int d = Combat.Dist(c.Pos, target);
+            float d = Vector2.Distance(c.pos, target);
+            var tt = new Vector2Int(Mathf.RoundToInt(target.x), Mathf.RoundToInt(target.y));
             switch (s.targeting)
             {
                 case Targeting.Self:
                 case Targeting.Summon:
+                case Targeting.Projectile:
                     return null;
                 case Targeting.Melee:
-                {
-                    var t = W.ActorAt(target);
-                    if (t == null || !c.IsHostileTo(t)) return "No enemy there";
-                    if (!Combat.CanMelee(c, t)) return "Target is not adjacent";
-                    return null;
-                }
+                    if (s.radius > 0) return Hostiles(c, c.pos, Combat.Reach(c, c) + 0.6f).Any() ? null : "No enemy in reach";
+                    return Combat.MeleeTarget(c, target - c.pos) != null ? null : "No enemy in reach";
                 case Targeting.Blink:
-                    if (d > s.range) return "Out of range";
-                    if (!map.Walkable(target.x, target.y) || W.ActorAt(target) != null) return "Can't teleport there";
-                    if (c == W.player && !map.visible[target.x, target.y]) return "Can't see there";
-                    if (!map.HasLOS(c.x, c.y, target.x, target.y)) return "No line of sight";
+                    if (d > s.range + 0.5f) return "Out of range";
+                    if (!map.InBounds(tt.x, tt.y) || W.Blocked(target, c.radius, false)) return "Can't teleport there";
+                    if (c == W.player && !map.visible[tt.x, tt.y]) return "Can't see there";
+                    if (!map.HasLOS(c.x, c.y, tt.x, tt.y)) return "No line of sight";
                     return null;
                 default:
                 {
-                    if (target == c.Pos) return "Choose a target";
-                    if (d > s.range) return "Out of range";
-                    if (!map.HasLOS(c.x, c.y, target.x, target.y)) return "No line of sight";
+                    if (d > s.range + 0.6f) return "Out of range";
+                    if (!map.InBounds(tt.x, tt.y) || !map.HasLOS(c.x, c.y, tt.x, tt.y)) return "No line of sight";
                     if (RequiresHostile(s.targeting))
                     {
-                        var t = W.ActorAt(target);
-                        if (t == null || !c.IsHostileTo(t)) return "No enemy there";
+                        var t = W.HostileNear(c, target, TargetSnap);
+                        if (t == null) return "No enemy there";
                         if (s.targeting == Targeting.Dash && DashLanding(c, t) == null) return "No room to land";
                     }
                     return null;
@@ -70,7 +71,7 @@ namespace Depthbound
             }
         }
 
-        public static bool TryCast(Actor c, SkillDef s, int rank, Vector2Int target)
+        public static bool TryCast(Actor c, SkillDef s, int rank, Vector2 target)
         {
             var reason = CanCast(c, s, rank, target);
             if (reason != null)
@@ -80,13 +81,15 @@ namespace Depthbound
             }
             float cost = Cost(c, s, rank, out bool life);
             if (life) c.life -= cost; else c.mana -= cost;
-            int cd = CooldownFor(c, s);
+            float cd = CooldownFor(c, s);
             if (cd > 0) c.cooldowns[s.id] = cd;
+            var dir = target - c.pos;
+            if (dir.sqrMagnitude > 0.01f) c.facing = dir.normalized;
             Cast(c, s, rank, target, false);
             return true;
         }
 
-        public static void Cast(Actor c, SkillDef s, int rank, Vector2Int target, bool isProc)
+        public static void Cast(Actor c, SkillDef s, int rank, Vector2 target, bool isProc)
         {
             if (c.dead) return;
             var elem = s.elementFromWeapon ? c.attackElement : s.element;
@@ -98,24 +101,24 @@ namespace Depthbound
                 case Targeting.Self:
                     if (s.radius > 0)
                     {
-                        int r = s.radius + area;
-                        Fx.Burst(c.Pos, r, color);
-                        foreach (var t in Hostiles(c, c.Pos, r)) HitWith(c, s, rank, t, isProc);
+                        float r = WorldRadius(s.radius + area);
+                        Fx.Burst(c.pos, r, color);
+                        foreach (var t in Hostiles(c, c.pos, r)) HitWith(c, s, rank, t, isProc);
                     }
                     break;
 
                 case Targeting.Melee:
                 {
-                    var main = W.ActorAt(target);
                     if (s.radius > 0)
                     {
-                        Fx.Burst(c.Pos, 1, color);
-                        foreach (var t in Hostiles(c, c.Pos, 1).Where(t => Combat.CanMelee(c, t)).ToList()) HitWith(c, s, rank, t, isProc);
+                        float r = Combat.Reach(c, c) + 0.6f;
+                        Fx.Burst(c.pos, r, color);
+                        foreach (var t in Hostiles(c, c.pos, r).ToList()) HitWith(c, s, rank, t, isProc);
                     }
-                    else if (main != null && c.IsHostileTo(main))
+                    else
                     {
-                        Fx.Flash(main.Pos, color);
-                        HitWith(c, s, rank, main, isProc);
+                        var main = isProc ? W.HostileNear(c, target, TargetSnap) : Combat.MeleeTarget(c, target - c.pos);
+                        if (main != null) { Fx.Flash(main.pos, color); HitWith(c, s, rank, main, isProc); }
                     }
                     break;
                 }
@@ -123,71 +126,67 @@ namespace Depthbound
                 case Targeting.Projectile:
                 {
                     int count = s.projectiles + Mathf.RoundToInt(c.Get(StatType.ExtraProjectiles));
-                    var aims = new List<Vector2Int> { target };
-                    if (count > 1)
+                    var dir = target - c.pos;
+                    if (dir.sqrMagnitude < 0.01f) dir = c.facing;
+                    dir.Normalize();
+                    float spread = count > 1 ? Mathf.Min(14f, 60f / count) : 0;
+                    for (int i = 0; i < count; i++)
                     {
-                        var others = Hostiles(c, c.Pos, s.range).Where(t => t.Pos != target && W.map.HasLOS(c.x, c.y, t.x, t.y)).ToList();
-                        W.rng.Shuffle(others);
-                        for (int i = 1; i < count; i++)
-                            aims.Add(i - 1 < others.Count ? others[i - 1].Pos : target);
+                        float angle = (i - (count - 1) / 2f) * spread;
+                        W.SpawnSkillProjectile(c, s, rank, Combat.Rotate(dir, angle), color, s.radius > 0 ? s.radius + area : 0, isProc);
                     }
-                    foreach (var aim in aims) FireProjectile(c, s, rank, aim, color, area, isProc);
                     break;
                 }
 
                 case Targeting.Ground:
                 {
-                    int r = s.radius + area;
+                    float r = WorldRadius(s.radius + area);
                     Fx.Burst(target, r, color);
                     var victims = Hostiles(c, target, r);
-                    if (s.pull)
-                        foreach (var t in victims.OrderBy(v => Combat.Dist(v.Pos, target))) Pull(t, target);
+                    if (s.pull) foreach (var t in victims) Pull(t, target);
                     foreach (var t in victims) HitWith(c, s, rank, t, isProc);
                     break;
                 }
 
                 case Targeting.Chain:
                 {
-                    var first = W.ActorAt(target);
-                    if (first == null || !c.IsHostileTo(first))
-                        first = Hostiles(c, target, 1).OrderBy(t => Combat.Dist(t.Pos, target)).FirstOrDefault();
+                    var first = W.HostileNear(c, target, TargetSnap + 0.5f);
                     if (first == null) break;
                     int chains = s.chains + rank / 3;
                     var hit = new HashSet<Actor>();
-                    var from = c.Pos;
+                    var from = c.pos;
                     var cur = first;
                     for (int i = 0; i <= chains && cur != null; i++)
                     {
-                        Fx.Line(from, cur.Pos, color);
+                        Fx.Line(from, cur.pos, color);
                         hit.Add(cur);
-                        from = cur.Pos;
-                        var at = cur.Pos;
+                        from = cur.pos;
+                        var at = cur.pos;
                         HitWith(c, s, rank, cur, isProc);
-                        cur = Hostiles(c, at, 4).Where(t => !hit.Contains(t) && W.map.HasLOS(at.x, at.y, t.x, t.y))
-                            .OrderBy(t => Combat.Dist(t.Pos, at)).FirstOrDefault();
+                        cur = Hostiles(c, at, 4.5f).Where(t => !hit.Contains(t)).OrderBy(t => Vector2.Distance(t.pos, at)).FirstOrDefault();
                     }
                     break;
                 }
 
                 case Targeting.Dash:
                 {
-                    var t = W.ActorAt(target);
+                    var t = W.HostileNear(c, target, TargetSnap);
                     if (t == null) break;
                     var land = DashLanding(c, t);
                     if (land == null) break;
-                    Fx.Line(c.Pos, land.Value, color);
-                    W.MoveActor(c, land.Value.x, land.Value.y);
-                    if (s.radius > 0) foreach (var v in Hostiles(c, c.Pos, s.radius)) HitWith(c, s, rank, v, isProc);
+                    Fx.Line(c.pos, land.Value, color);
+                    c.pos = land.Value;
+                    if (s.radius > 0) foreach (var v in Hostiles(c, c.pos, WorldRadius(s.radius))) HitWith(c, s, rank, v, isProc);
                     else HitWith(c, s, rank, t, isProc);
                     break;
                 }
 
                 case Targeting.Blink:
-                    if (W.map.Walkable(target.x, target.y) && W.ActorAt(target) == null)
+                    if (!W.Blocked(target, c.radius, false))
                     {
-                        Fx.Burst(c.Pos, 0, s.color);
-                        W.MoveActor(c, target.x, target.y);
-                        Fx.Burst(c.Pos, 0, s.color);
+                        Fx.Burst(c.pos, 0.5f, s.color);
+                        c.pos = target;
+                        Fx.Burst(c.pos, 0.5f, s.color);
                     }
                     break;
 
@@ -197,10 +196,10 @@ namespace Depthbound
 
                 case Targeting.Target:
                 {
-                    var t = W.ActorAt(target);
-                    if (t != null && c.IsHostileTo(t))
+                    var t = W.HostileNear(c, target, TargetSnap);
+                    if (t != null)
                     {
-                        Fx.Projectile(c.Pos, t.Pos, color);
+                        Fx.Projectile(c.pos, t.pos, color);
                         HitWith(c, s, rank, t, isProc);
                     }
                     break;
@@ -213,14 +212,14 @@ namespace Depthbound
             {
                 if (c.keystones.Contains(Keystone.Echo) && !s.weapon && s.DealsDamage && W.rng.Chance(0.25f))
                 {
-                    Fx.Text(c.Pos, "Echo!", s.color, 0.8f);
+                    Fx.Text(c.pos, "Echo!", s.color, 0.8f);
                     Cast(c, s, rank, target, true);
                 }
-                Combat.TriggerProcs(c, ProcTrigger.OnCast, W.ActorAt(target), target);
+                Combat.TriggerProcs(c, ProcTrigger.OnCast, W.HostileNear(c, target, TargetSnap), target);
             }
         }
 
-        static List<Actor> Hostiles(Actor c, Vector2Int center, int radius)
+        public static IEnumerable<Actor> Hostiles(Actor c, Vector2 center, float radius)
         {
             var list = new List<Actor>();
             foreach (var a in W.ActorsInRadius(center, radius))
@@ -228,7 +227,8 @@ namespace Depthbound
             return list;
         }
 
-        static void HitWith(Actor c, SkillDef s, int rank, Actor t, bool isProc)
+        /// <summary>Applies a skill's damage/status to one target.</summary>
+        public static void HitWith(Actor c, SkillDef s, int rank, Actor t, bool isProc)
         {
             if (t.dead) return;
             if (!s.DealsDamage)
@@ -246,79 +246,54 @@ namespace Depthbound
                 Combat.Deal(new HitInfo
                 {
                     source = c, target = t, baseDamage = baseD, element = elem,
-                    isAttack = s.weapon, melee = s.weapon && Combat.Dist(c, t) <= 1, isProc = isProc,
-                    status = s.status, statusChance = s.statusChance, statusTurns = s.statusTurns,
+                    isAttack = s.weapon, melee = s.weapon && Combat.CanMelee(c, t), isProc = isProc,
+                    status = s.status, statusChance = s.statusChance, statusTime = s.statusTurns,
                     bonusCrit = s.bonusCrit, executeBonus = s.executeBonus,
                 });
             }
-            if (s.knockback && !t.dead && !t.isBoss) Push(t, c.Pos);
+            if (s.knockback && !t.dead && !t.isBoss) Push(t, c.pos);
         }
 
-        static void FireProjectile(Actor c, SkillDef s, int rank, Vector2Int aim, Color color, int area, bool isProc)
+        /// <summary>Area burst used by exploding projectiles.</summary>
+        public static void Explosion(Actor c, SkillDef s, int rank, Vector2 center, int radius, bool isProc)
         {
-            int dx = aim.x - c.x, dy = aim.y - c.y;
-            int n = Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dy));
-            if (n == 0) return;
-            var end = new Vector2Int(c.x + Mathf.RoundToInt(dx * (float)s.range / n), c.y + Mathf.RoundToInt(dy * (float)s.range / n));
-            var line = DungeonMap.Line(c.Pos, end);
-            var impact = c.Pos;
-            Actor explodeOn = null;
-            var hitSet = new List<Actor>();
-            for (int i = 1; i < line.Count; i++)
-            {
-                var p = line[i];
-                if (!W.map.InBounds(p.x, p.y) || !W.map.Transparent(p.x, p.y)) break;
-                impact = p;
-                var a = W.ActorAt(p);
-                if (a == null || !c.IsHostileTo(a)) continue;
-                if (s.radius > 0) { explodeOn = a; break; }
-                hitSet.Add(a);
-                if (!s.pierce) break;
-            }
-            Fx.Projectile(c.Pos, impact, color);
-            foreach (var a in hitSet) HitWith(c, s, rank, a, isProc);
-            if (s.radius > 0 && (explodeOn != null || impact != c.Pos))
-            {
-                int r = s.radius + area;
-                Fx.Burst(impact, r, color);
-                foreach (var t in Hostiles(c, impact, r)) HitWith(c, s, rank, t, isProc);
-            }
+            float r = WorldRadius(radius);
+            var elem = s.elementFromWeapon ? c.attackElement : s.element;
+            Fx.Burst(center, r, SkillDatabase.ElementColor(Combat.Convert(c, elem)));
+            foreach (var t in Hostiles(c, center, r)) HitWith(c, s, rank, t, isProc);
         }
 
-        public static Vector2Int? DashLanding(Actor c, Actor t)
+        public static Vector2? DashLanding(Actor c, Actor t)
         {
-            if (Combat.CanMelee(c, t)) return c.Pos;
-            var line = DungeonMap.Line(c.Pos, t.Pos);
-            Vector2Int? best = null;
-            for (int i = 1; i < line.Count - 1; i++)
+            if (Combat.CanMelee(c, t)) return c.pos;
+            var delta = t.pos - c.pos;
+            float len = delta.magnitude;
+            var dir = delta / len;
+            float stop = len - (c.radius + t.radius + 0.25f);
+            Vector2? best = null;
+            for (float d = 0.25f; d <= stop; d += 0.25f)
             {
-                var p = line[i];
-                if (!W.map.Walkable(p.x, p.y)) break;
-                var a = W.ActorAt(p);
-                if (a != null) break;
+                var p = c.pos + dir * d;
+                if (W.Blocked(p, c.radius, false)) break;
                 best = p;
             }
-            if (best == null || Combat.Dist(best.Value, t.Pos) > 1) return null;
+            if (best == null || Vector2.Distance(best.Value, t.pos) > Combat.Reach(c, t)) return null;
             return best;
         }
 
-        static void Push(Actor t, Vector2Int from)
+        static void Push(Actor t, Vector2 from)
         {
-            var dir = new Vector2Int(System.Math.Sign(t.x - from.x), System.Math.Sign(t.y - from.y));
-            var dest = t.Pos + dir;
-            if (W.IsFree(dest.x, dest.y) && W.map.CanStep(t.x, t.y, dir.x, dir.y)) W.MoveActor(t, dest.x, dest.y);
+            var dir = t.pos - from;
+            if (dir.sqrMagnitude < 0.001f) return;
+            W.TryMove(t, dir.normalized * 1.3f);
         }
 
-        static void Pull(Actor t, Vector2Int center)
+        static void Pull(Actor t, Vector2 center)
         {
-            for (int step = 0; step < 2; step++)
-            {
-                var dir = new Vector2Int(System.Math.Sign(center.x - t.x), System.Math.Sign(center.y - t.y));
-                if (dir == Vector2Int.zero) return;
-                var dest = t.Pos + dir;
-                if (!W.IsFree(dest.x, dest.y) || !W.map.CanStep(t.x, t.y, dir.x, dir.y)) return;
-                W.MoveActor(t, dest.x, dest.y);
-            }
+            var d = center - t.pos;
+            float len = d.magnitude;
+            if (len < 0.7f) return;
+            W.TryMove(t, d / len * Mathf.Min(len - 0.6f, 2f));
         }
 
         static void ApplySelfEffects(Actor c, SkillDef s, int rank)
@@ -327,19 +302,19 @@ namespace Depthbound
             {
                 float amt = c.MaxLife * (s.healPct + s.healPerRank * (rank - 1)) / 100f;
                 c.Heal(amt);
-                Fx.Text(c.Pos, "+" + Mathf.RoundToInt(amt), new Color(0.4f, 1f, 0.4f));
+                Fx.Text(c.pos, "+" + Mathf.RoundToInt(amt), new Color(0.4f, 1f, 0.4f));
             }
             if (s.shieldPct > 0)
             {
                 c.shield = Mathf.Max(c.shield, c.MaxLife * (s.shieldPct + s.shieldPerRank * (rank - 1)) / 100f);
-                Fx.Text(c.Pos, "Shield", new Color(1f, 0.95f, 0.6f));
+                Fx.Text(c.pos, "Shield", new Color(1f, 0.95f, 0.6f));
             }
             if (s.buffTurns > 0 && s.mods.Count > 0)
             {
-                var b = new Buff { id = s.id, name = s.name, turns = s.buffTurns };
+                var b = new Buff { id = s.id, name = s.name, remaining = s.buffTurns };
                 foreach (var m in s.mods) b.mods.Add(new StatMod(m.stat, m.At(rank)));
                 c.AddBuff(b);
-                Fx.Burst(c.Pos, 0, s.color);
+                Fx.Burst(c.pos, 0.6f, s.color);
             }
         }
 
@@ -365,7 +340,7 @@ namespace Depthbound
             minion.Recalc();
             minion.life = minion.MaxLife;
             W.Place(minion, spot.Value);
-            Fx.Burst(spot.Value, 0, s.color);
+            Fx.Burst(spot.Value, 0.5f, s.color);
         }
     }
 }
