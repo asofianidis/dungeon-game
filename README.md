@@ -1,5 +1,7 @@
 # Depthbound
 
+[![Build](https://github.com/asofianidis/dungeon-game/actions/workflows/build.yml/badge.svg)](https://github.com/asofianidis/dungeon-game/actions/workflows/build.yml)
+
 A procedurally generated, real-time 2D action roguelike dungeon crawler built in Unity 6. Dive as deep as you can, die, grow stronger, and dive again.
 
 Everything (dungeons, monsters, sprites, icons, and UI) is generated from code, so the project has no binary art dependencies.
@@ -97,6 +99,32 @@ Unity.exe -batchmode -nographics -projectPath . -executeMethod Depthbound.Editor
 # Scripted screenshots from a built player
 Builds/Windows/Depthbound.exe -screen-width 1600 -screen-height 900 -screen-fullscreen 0 -autoshot shots
 ```
+
+## CI/CD
+
+`.github/workflows/build.yml` runs on every push to `main` (and on demand from the Actions tab):
+
+1. **Smoke test:** the headless `SmokeTest` suite runs in GameCI's Unity 6000.6.7f1 container. A failure stops the pipeline.
+2. **Build:** a Windows 64-bit player is built, with `Library/` cached between runs.
+3. **Deliver:** the zipped build is uploaded as a workflow artifact (kept 30 days) and published to the rolling **`latest`** pre-release on the Releases page.
+
+### One-time setup: Unity license secrets
+
+GameCI needs a Unity Personal license in three repository secrets:
+
+1. In **Unity Hub**, go to **Preferences > Licenses > Add > Get a free personal license**. Do this even if a license is already listed; it's what writes the license file.
+2. Confirm the file `C:\ProgramData\Unity\Unity_lic.ulf` exists (the folder is hidden).
+3. From the repo folder, run:
+
+   ```powershell
+   Get-Content C:\ProgramData\Unity\Unity_lic.ulf -Raw | gh secret set UNITY_LICENSE
+   gh secret set UNITY_EMAIL      # prompts for your Unity account email
+   gh secret set UNITY_PASSWORD   # prompts for your Unity account password
+   ```
+
+4. Re-run the workflow from the Actions tab, or push a commit.
+
+GameCI recommends a plain alphanumeric Unity password; some special characters break activation.
 
 ## Ideas for what's next
 
