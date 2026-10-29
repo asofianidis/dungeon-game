@@ -6,15 +6,19 @@ Usage (from the repo root):
 
 Pass model names after the output folder to rebuild only those (e.g. "demon princess").
 
-Characters are modeled, rigged and animated:
-- Bodies are sculpted with the Skin modifier over a joint graph with muscle nodes (biceps, forearms,
-  thighs, calves), then subdivided. Hands have fingers and thumbs. Heads have noses, pointed ears and
-  a front-projected face UV painted in Unity (material role "Face<Variant>").
-- Hair is layered S-curved clumps and ribbon strands; horns, tails and wing fingers are tapered tubes;
-  gowns, capes and moldings are lathed (open lathes give folds); armor is layered and bevelled.
-- Each character has an armature with weighted bodies and rigid accessories, plus keyframed clips
-  (Idle, Walk, Attack, Cast, Hit, Death) authored in dbmodel/anim.py.
-- Hard-surface and cloth parts get cube-projected UVs for Unity's detail textures.
+Characters and creatures are sculpted as signed distance fields (dbmodel/sdf.py), meshed with
+surface nets, decimated to a triangle budget and given normals from the field gradient:
+- Bodies are one seamless anatomical field (dbmodel/anatomy.py): pelvis, rib cage, bust or pecs,
+  deltoids, tapered limbs with muscle bulges, knees and feet. Heads have a V-shaped jaw and a
+  front-projected face UV painted in Unity (material role "Face<Variant>"); hands have jointed fingers.
+- Hair is a scalp mass with a jagged fringe sheet and flattened locks; horns, tails and wings are
+  fields too (wing membranes are billowed meshes with scalloped edges).
+- Clothing and armor are shells or slabs of the body field cut by regions (dbmodel/garments.py), so
+  they conform to the figure: bodices, plate, greaves, flared folded skirts, capes, sleeves, trims.
+- Bodies get bone-heat skin weights; clothing copies the body's weights; accessories are rigid.
+  Keyframed clips (Idle, Walk, Attack, Cast, Hit, Death) come from dbmodel/anim.py.
+- Every model gets per-vertex ambient occlusion and tint baked into a color attribute
+  (dbmodel/shade.py) that Unity's Depthbound/Lit shader multiplies into the albedo.
 
 Conventions: 1 unit = 1 tile, models stand on z=0 facing -Y, an empty named "Front" marks the front,
 materials are role names, and prop parts may encode their parent as "Part@Parent".
@@ -27,10 +31,18 @@ import sys
 import bpy
 from mathutils import Matrix, Vector
 
+
+def V3(*a):
+    return Vector(a)
+
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dbmodel.geometry import (Rig, anime_head, apply_modifiers, bevel_box, bind, blob, build_armature, clear,  # noqa: E402
-                              curve_pts, export, finalize, front_marker, join, lathe, link, membrane, prism, skin, tube, xform)
-from dbmodel import anim  # noqa: E402
+import numpy as np  # noqa: E402
+from dbmodel.geometry import (Rig, bevel_box, bind, blob, build_armature, clear, curve_pts, export,  # noqa: E402
+                              front_marker, join, lathe, link, prism, tube, xform)
+from dbmodel import anim, sdf, shade  # noqa: E402
+from dbmodel import anatomy as A  # noqa: E402
+from dbmodel import garments as G  # noqa: E402
 
 ARGS = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 OUT = ARGS[0] if ARGS else "Models"
@@ -42,106 +54,70 @@ def out(name):
     return os.path.join(OUT, name + ".fbx")
 
 
-def finish_character(name, rig, parts, kind, **style):
+def finish_sculpted(name, rig, body, parts, kind, ao=True, heat_skip=("Wing",), **style):
+    """Rig a sculpted character: bone-heat weights for the body, then each part by its spec:
+    ("rigid", bone), ("bind", [bones]) nearest-bone blend, ("transfer", allowed or None, [extra
+    sources]) copied from the body, or ("fn", fn(P, bones) -> W). Bakes AO, adds clips, exports."""
     arm = build_armature(rig)
-    body = join(parts, "Mesh")
-    mod = body.modifiers.new("Armature", "ARMATURE")
+    bones, W, missing = shade.heat_weights(body, arm, skip=heat_skip)
+    if missing.any():
+        print("heat weights missing on", int(missing.sum()), "verts; using nearest bones there")
+        P = shade._co(body)
+        NW = shade.nearest_bone_weights(P, rig, bones)
+        W[missing] = NW[missing]
+    shade.write_weights(body, bones, W)
+    for ob, spec in parts:
+        kind_ = spec[0]
+        if kind_ == "rigid":
+            shade.rigid(ob, spec[1])
+        elif kind_ == "bind":
+            bind(ob, rig, spec[1])
+        elif kind_ == "transfer":
+            allowed = spec[1] if len(spec) > 1 else None
+            extra = spec[2] if len(spec) > 2 else []
+            shade.transfer_weights(ob, [body] + list(extra), bones, allowed)
+        elif kind_ == "fn":
+            shade.weight_fn(ob, bones, lambda P: spec[1](P, bones))
+    obs = [body] + [p[0] for p in parts]
+    for o in obs:
+        shade.ensure_tint(o)
+    mesh = join(obs, "Mesh")
+    if ao:
+        shade.bake_ao(mesh)
+    mod = mesh.modifiers.new("Armature", "ARMATURE")
     mod.object = arm
-    body.parent = arm
+    mesh.parent = arm
+    print(name, "triangles:", sum(len(p.vertices) - 2 for p in mesh.data.polygons), "verts:", len(mesh.data.vertices))
     front_marker(arm)
     anim.add_clips(arm, kind, **style)
     export(out(name), animated=True)
 
 
+def sculpted_rig(J, head_top):
+    return humanoid_rig(J, head_top)
+
+
+def skirt_weights(J, z_top, z_hem, follow=0.4):
+    """Skirt follows the hips, and each side partly follows its thigh toward the hem."""
+    H = J["H"]
+
+    def fn(P, bones):
+        W = np.zeros((len(P), len(bones)))
+        t = np.clip((z_top - P[:, 2]) / max(z_top - z_hem, 1e-3), 0, 1) ** 1.3 * follow
+        side = 0.5 + 0.5 * np.tanh(P[:, 0] / (0.03 * H))
+        W[:, bones.index("Hips")] = 1 - t
+        W[:, bones.index("UpperLegL")] = t * side
+        W[:, bones.index("UpperLegR")] = t * (1 - side)
+        return W
+    return fn
+
+
+HAIR_BONES = ["Head", "Neck", "Chest", "Spine", "Hips"]
+
+
 # =============================================================================================
 # Humanoid anatomy
 # =============================================================================================
-
-def humanoid_joints(h=1.0, shoulder=0.16, hip=0.08, hunch=0.0):
-    J = {
-        "hips": (0, 0, 0.56 * h), "waist": (0, -0.004, 0.63 * h), "spine": (0, -0.005 - hunch * 0.4, 0.69 * h),
-        "chest": (0, -0.01 - hunch, 0.8 * h), "neck": (0, -0.01 - hunch * 1.4, 0.92 * h), "headBase": (0, -0.01 - hunch * 1.6, 0.97 * h),
-    }
-    sh = J["chest"][2] + 0.07 * h
-    cy = J["chest"][1]
-    for s, side in ((1, "L"), (-1, "R")):
-        J["shoulder" + side] = (s * shoulder, cy, sh)
-        J["bicep" + side] = (s * (shoulder + 0.02), cy + 0.012, sh - 0.1 * h)
-        J["elbow" + side] = (s * (shoulder + 0.035), cy + 0.025, sh - 0.2 * h)
-        J["forearm" + side] = (s * (shoulder + 0.045), cy + 0.005, sh - 0.29 * h)
-        J["wrist" + side] = (s * (shoulder + 0.05), cy - 0.02, sh - 0.38 * h)
-        J["hand" + side] = (s * (shoulder + 0.055), cy - 0.035, sh - 0.45 * h)
-        J["hip" + side] = (s * hip, 0, 0.53 * h)
-        J["thigh" + side] = (s * (hip + 0.004), -0.012, 0.41 * h)
-        J["knee" + side] = (s * (hip + 0.005), -0.02, 0.29 * h)
-        J["calf" + side] = (s * (hip + 0.006), 0.012, 0.2 * h)
-        J["ankle" + side] = (s * (hip + 0.008), 0.01, 0.06 * h)
-        J["toe" + side] = (s * (hip + 0.01), -0.085, 0.025 * h)
-    return {k: Vector(v) for k, v in J.items()}
-
-
-def humanoid_body(J, role, female=False, bulk=1.0, gaunt=False, subsurf=2):
-    """Torso, arms (to the wrist) and legs as one sculpted skin mesh with muscle nodes."""
-    t = 0.55 if gaunt else 1.0
-    lt = t ** 0.5
-    nodes, idx = [], {}
-
-    def node(key, r):
-        idx[key] = len(nodes)
-        nodes.append((J[key], r))
-
-    f = female
-    node("hips", ((0.12 if f else 0.1) * bulk * t, (0.085 if f else 0.075) * bulk * t))
-    node("waist", ((0.068 if f else 0.088) * bulk * t, (0.058 if f else 0.065) * bulk * t))
-    node("spine", ((0.078 if f else 0.095) * bulk * t, 0.064 * bulk * t))
-    node("chest", ((0.09 if f else 0.12) * bulk * t, (0.074 if f else 0.08) * bulk * t))
-    node("neck", 0.034 * bulk * (0.8 if gaunt else 1.0))
-    for side in "LR":
-        node("shoulder" + side, (0.042 if f else 0.056) * bulk * lt)
-        node("bicep" + side, (0.034 if f else 0.047) * bulk * lt)
-        node("elbow" + side, (0.027 if f else 0.036) * bulk * lt)
-        node("forearm" + side, (0.028 if f else 0.039) * bulk * lt)
-        node("wrist" + side, (0.02 if f else 0.026) * bulk * lt)
-        node("hip" + side, (0.064 if f else 0.068) * bulk * lt)
-        node("thigh" + side, (0.058 if f else 0.06) * bulk * lt)
-        node("knee" + side, (0.038 if f else 0.045) * bulk * lt)
-        node("calf" + side, (0.04 if f else 0.047) * bulk * lt)
-        node("ankle" + side, (0.026 if f else 0.031) * bulk * lt)
-        node("toe" + side, (0.025 if f else 0.03) * bulk)
-    E = [("hips", "waist"), ("waist", "spine"), ("spine", "chest"), ("chest", "neck")]
-    for s in "LR":
-        E += [("chest", "shoulder" + s), ("shoulder" + s, "bicep" + s), ("bicep" + s, "elbow" + s), ("elbow" + s, "forearm" + s),
-              ("forearm" + s, "wrist" + s), ("hips", "hip" + s), ("hip" + s, "thigh" + s), ("thigh" + s, "knee" + s),
-              ("knee" + s, "calf" + s), ("calf" + s, "ankle" + s), ("ankle" + s, "toe" + s)]
-    return skin("Body", nodes, [(idx[a], idx[b]) for a, b in E], role, subsurf=subsurf)
-
-
-def hand(J, side, role, scale=1.0, claws=None):
-    """A hand with four fingers and a thumb, hanging with the palm toward the thigh."""
-    s = 1 if side == "L" else -1
-    w, c = J["wrist" + side], J["hand" + side]
-    down = (c - w).normalized()
-    palm = w + down * 0.035 * scale
-    nodes = [(w, 0.019 * scale), (palm, (0.026 * scale, 0.013 * scale))]
-    edges = [(0, 1)]
-    for k, dy in enumerate((-0.016, -0.005, 0.006, 0.016)):
-        base = palm + Vector((s * 0.004, dy * scale, -0.022 * scale))
-        mid = base + Vector((s * 0.003, dy * 0.15, -0.022 * scale * (1.0 - abs(dy) * 6)))
-        tip = mid + Vector((-s * 0.002, -0.004, -0.018 * scale * (1.0 - abs(dy) * 6)))
-        i = len(nodes)
-        nodes += [(base, 0.0085 * scale), (mid, 0.0075 * scale), (tip, 0.0065 * scale)]
-        edges += [(1, i), (i, i + 1), (i + 1, i + 2)]
-    i = len(nodes)
-    tb = palm + Vector((-s * 0.008, -0.022 * scale, 0.004))
-    nodes += [(tb, 0.01 * scale), (tb + Vector((0, -0.014 * scale, -0.016 * scale)), 0.008 * scale)]
-    edges += [(1, i), (i, i + 1)]
-    parts = [skin("Hand", nodes, edges, role, subsurf=1)]
-    if claws:
-        for k, dy in enumerate((-0.016, -0.005, 0.006, 0.016)):
-            tip = palm + Vector((s * 0.005, dy * scale, -0.07 * scale))
-            parts.append(tube("Claw", [tip, tip + Vector((0, -0.01, -0.035 * scale))], [0.006 * scale, 0.0], claws, segs=5))
-    return parts
-
 
 def humanoid_rig(J, head_top):
     rig = Rig()
@@ -160,129 +136,6 @@ def humanoid_rig(J, head_top):
     return rig
 
 
-BODY_BONES = ["Hips", "Spine", "Chest", "Neck"] + [b + s for s in "LR" for b in ("UpperArm", "LowerArm", "Hand", "UpperLeg", "LowerLeg", "Foot")]
-
-
-def head_features(head_c, r, skin_role, ears=True, ear_len=1.0):
-    """Nose and pointed demonic ears."""
-    parts = [blob("Nose", r * 0.1, head_c + Vector((0, -r * 0.86, -r * 0.12)), skin_role, scale=(0.55, 0.7, 1.0), subdiv=2)]
-    if ears:
-        for s in (1, -1):
-            base = head_c + Vector((s * r * 0.92, r * 0.05, -r * 0.05))
-            tip = head_c + Vector((s * r * (1.25 + 0.35 * ear_len), r * 0.3, r * (0.25 + 0.3 * ear_len)))
-            parts.append(tube("Ear", curve_pts(base, tip, (0, 0, -0.01), 4), [r * 0.2, r * 0.15, r * 0.08, 0.0], skin_role, segs=8, flat=0.35, ref=(0, 1, 0)))
-    return parts
-
-
-def anime_hair(center, r, role, seed=1, length=1.0, back=1.0, spikes=1.0, bangs=7, ahoge=True):
-    """Layered anime hair: an open cap, two rings of S-curved clumps, swept bangs and a cowlick."""
-    rnd = random.Random(seed)
-    c = Vector(center)
-    parts = []
-    cap = blob("HairCap", r * 1.09, c, role, scale=(1.0, 1.03, 0.98), subdiv=3)
-    for v in cap.data.vertices:   # open the cap at the face
-        rel = v.co - c
-        if rel.y < -0.3 * r and rel.z < 0.38 * r:
-            v.co = c + rel * 0.74
-    parts.append(cap)
-    for ring, (count, height, reach) in enumerate(((13, 0.55, 1.0), (10, 0.15, 1.25))):
-        for i in range(count):
-            a = 2 * math.pi * (i + ring * 0.5) / count + rnd.uniform(-0.12, 0.12)
-            dx, dy = math.sin(a), math.cos(a)
-            if dy < -0.5:
-                continue
-            base = c + Vector((dx * r * 0.88, dy * r * 0.88, r * height))
-            L = r * rnd.uniform(0.9, 1.25) * reach * (back if dy > 0.3 else length)
-            tip = base + Vector((dx * L * 0.7 * spikes, dy * L * 0.75, -L * (0.55 + 0.3 * ring)))
-            bend = Vector((dx * L * 0.25, dy * L * 0.2, L * 0.15))
-            curl = Vector((-dx, -dy, 0)) * L * 0.08
-            pts = curve_pts(base, tip, bend, 5, sway=curl)
-            parts.append(tube("Hair", pts, [r * 0.33, r * 0.27, r * 0.18, r * 0.08, 0.0], role, segs=8, flat=0.5, twist=0.5))
-    for k in range(bangs):
-        x = (k - (bangs - 1) / 2) * r * 0.24
-        base = c + Vector((x, -r * 0.62, r * 0.7))
-        tip = c + Vector((x * 1.2 + rnd.uniform(-0.015, 0.015) + 0.02 * r, -r * 1.03, r * (0.15 + 0.06 * abs(k - bangs // 2) / bangs)))
-        parts.append(tube("Bang", curve_pts(base, tip, (0, -r * 0.18, r * 0.05), 4), [r * 0.19, r * 0.15, r * 0.08, 0.0], role, segs=8, flat=0.45))
-    if ahoge:
-        base = c + Vector((0.0, -r * 0.1, r * 1.02))
-        parts.append(tube("Ahoge", curve_pts(base, base + Vector((r * 0.25, -r * 0.35, r * 0.5)), (0, r * 0.3, r * 0.15), 5),
-                          [r * 0.09, r * 0.08, r * 0.05, r * 0.03, 0.0], role, segs=6, flat=0.4))
-    return parts
-
-
-def curved_horn(base, side, length, role, curl=1.0, thickness=0.05, rings=True):
-    pts, radii = [], []
-    for i in range(11):
-        t = i / 10
-        ang = t * 2.2 * curl
-        pts.append(Vector(base) + Vector((side * (0.15 * t + 0.06 * math.sin(ang)) * length,
-                                          (0.55 * t - 0.25 * math.sin(ang * 0.8)) * length * 0.6,
-                                          (0.55 * math.sin(ang * 0.7) + 0.2 * t) * length)))
-        ridge = 1.0 + (0.12 if rings and i % 2 == 1 and i < 8 else 0.0)
-        radii.append((thickness * (1 - t) + 0.002) * ridge)
-    radii[-1] = 0.0
-    return tube("Horn", pts, radii, role, segs=12)
-
-
-def bat_wing(shoulder, side, span, role_membrane, role_bone, droop=0.0):
-    s = side
-    root = Vector(shoulder)
-    wrist = root + Vector((s * span * 0.38, span * 0.18, span * 0.28))
-    tips = [wrist + Vector((s * span * 0.62, span * 0.1, span * 0.32 - droop)),
-            wrist + Vector((s * span * 0.66, span * 0.12, -span * 0.08 - droop)),
-            wrist + Vector((s * span * 0.38, span * 0.1, -span * 0.42 - droop))]
-    low = root + Vector((s * span * 0.08, span * 0.12, -span * 0.48))
-    parts = [tube("WingArm", curve_pts(root, wrist, (0, 0, span * 0.05), 4), [0.024, 0.02, 0.018, 0.016], role_bone, segs=7)]
-    parts.append(tube("WingClaw", [wrist, wrist + Vector((s * 0.01, -0.02, span * 0.09))], [0.012, 0.0], role_bone, segs=5))
-    for tp in tips:
-        parts.append(tube("WingFinger", curve_pts(wrist, tp, (0, 0, span * 0.05), 4), [0.015, 0.012, 0.008, 0.0], role_bone, segs=6))
-    poly = [root, wrist, tips[0]]
-    for a, b in ((tips[0], tips[1]), (tips[1], tips[2]), (tips[2], low)):
-        mid = (a + b) / 2
-        poly += [mid + (wrist - mid).normalized() * span * 0.11, b]
-    poly = poly[:-1] + [low]
-    parts.append(membrane("Membrane", [p + Vector((0, 0.005, 0)) for p in poly], role_membrane))
-    return parts, wrist, tips[1]
-
-
-def demon_tail(root, role, tip_role, length=0.7, heart=False):
-    pts, radii = [], []
-    for i in range(9):
-        t = i / 8
-        pts.append(Vector(root) + Vector((0.08 * math.sin(t * 3.0), length * (0.35 * t + 0.4 * t * t), -length * 0.55 * t + length * 0.45 * t * t * t)))
-        radii.append(0.035 * (1 - t * 0.72))
-    parts = [tube("Tail", pts, radii, role, segs=9)]
-    tip = pts[-1]
-    d = (pts[-1] - pts[-2]).normalized()
-    w = 0.085 if heart else 0.07
-    parts.append(tube("TailTip", [tip - d * 0.01, tip + d * 0.04, tip + d * 0.08, tip + d * 0.14], [0.0, w, w * 0.75, 0.0], tip_role, segs=10, flat=0.25, ref=(1, 0, 0)))
-    return parts, pts
-
-
-def add_wings(rig, parts, J, span, membrane_role, bone_role, droop=0.0, attach="Chest"):
-    for s, side in ((1, "L"), (-1, "R")):
-        root = J["chest"] + Vector((s * 0.06, 0.07, 0.06))
-        wparts, wrist, tip = bat_wing(root, s, span, membrane_role, bone_role, droop=droop)
-        rig.add("Wing" + side, root, wrist, attach)
-        rig.add("WingTip" + side, wrist, tip, "Wing" + side)
-        for wp in wparts:
-            parts.append(bind(wp, rig, ["Wing" + side, "WingTip" + side]))
-
-
-def add_tail(rig, parts, root, skin_role, tip_role, length, heart=False):
-    tparts, tpts = demon_tail(root, skin_role, tip_role, length=length, heart=heart)
-    rig.add("Tail1", tpts[0], tpts[3], "Hips")
-    rig.add("Tail2", tpts[3], tpts[6], "Tail1")
-    rig.add("Tail3", tpts[6], tpts[8], "Tail2")
-    for tp in tparts:
-        parts.append(bind(tp, rig, ["Tail1", "Tail2", "Tail3"]))
-
-
-def plate_shell(name, J, role, grow=0.0, subsurf=2):
-    return skin(name, [(J["hips"] + Vector((0, 0, 0.02)), (0.118 + grow, 0.088 + grow)), (J["waist"], (0.1 + grow, 0.076 + grow)),
-                       (J["spine"], (0.106 + grow, 0.08 + grow)), (J["chest"], (0.134 + grow, 0.094 + grow)),
-                       (J["neck"] + Vector((0, 0, -0.04)), (0.07 + grow, 0.062 + grow))],
-                [(0, 1), (1, 2), (2, 3), (3, 4)], role, subsurf=subsurf)
 
 
 def ring(name, z, r, role, h=0.012, center=(0, 0, 0), segs=24, scale_y=1.0):
@@ -292,492 +145,811 @@ def ring(name, z, r, role, h=0.012, center=(0, 0, 0), segs=24, scale_y=1.0):
     return xform(ob, center)
 
 
-def sword(rig, parts, J, side="R", length=0.62, role="Metal"):
-    h = J["hand" + side]
-    blade = prism("Blade", [(-0.02, 0.0), (0.02, 0.0), (0.016, length * 0.86), (0.0, length), (-0.016, length * 0.86)], 0.012, role, bevel=0.004,
-                  loc=h + Vector((0, -0.04, 0.02)), rot=(-75, 0, 0))
-    parts.append(bind(blade, rig, "Hand" + side))
-    fuller = prism("Fuller", [(-0.005, 0.05), (0.005, 0.05), (0.004, length * 0.7), (-0.004, length * 0.7)], 0.014, "Dark", bevel=0.0,
-                   loc=h + Vector((0, -0.04, 0.02)), rot=(-75, 0, 0))
-    parts.append(bind(fuller, rig, "Hand" + side))
-    guard = tube("Guard", curve_pts(h + Vector((-0.08, -0.03, 0.02)), h + Vector((0.08, -0.03, 0.02)), (0, -0.01, 0.025), 5), [0.012, 0.014, 0.016, 0.014, 0.012], "Gold", segs=8)
-    parts.append(bind(guard, rig, "Hand" + side))
-    parts.append(bind(tube("Grip", [h + Vector((0, 0.05, -0.03)), h + Vector((0, -0.02, 0.01))], [0.015, 0.015], "Leather", segs=8), rig, "Hand" + side))
-    parts.append(bind(blob("Pommel", 0.018, h + Vector((0, 0.065, -0.04)), "Glow", subdiv=1, faceted=True), rig, "Hand" + side))
-
-
 # =============================================================================================
 # Characters
 # =============================================================================================
 
+def sculpt_sword(J, side="R", length=0.62, role="Metal", tilt=15.0):
+    """A bevelled sword held in the fist, blade forward and slightly up (rigid to the hand)."""
+    h = J["hand" + side] + (J["hand" + side] - J["wrist" + side]).normalized() * 0.006
+    a = math.radians(90 - tilt)
+    b = V3(0, -math.sin(a), math.cos(a))
+    rot = (90 - tilt, 0, 0)
+    obs = [prism("Blade", [(-0.02, 0.0), (0.02, 0.0), (0.017, length * 0.84), (0.0, length), (-0.017, length * 0.84)], 0.011, role, bevel=0.004,
+                 loc=h + b * 0.05, rot=rot),
+           prism("Fuller", [(-0.005, 0.04), (0.005, 0.04), (0.004, length * 0.7), (-0.004, length * 0.7)], 0.013, "Dark", bevel=0.0,
+                 loc=h + b * 0.05, rot=rot)]
+    obs.append(tube("Guard", curve_pts(h + b * 0.045 + V3(-0.075, 0, 0), h + b * 0.045 + V3(0.075, 0, 0), b * 0.02, 5),
+                    [0.011, 0.013, 0.015, 0.013, 0.011], "Gold", segs=8))
+    obs.append(tube("Grip", [h - b * 0.055, h + b * 0.04], [0.013, 0.014], "Leather", segs=8))
+    obs.append(blob("Pommel", 0.017, h - b * 0.07, "Glow", subdiv=1, faceted=True))
+    return [(o, ("rigid", "Hand" + side)) for o in obs]
+
+
+def head_center(J, r, k=0.55):
+    return J["headBase"] + V3(0, -0.008 * J["H"], k * r)
+
+
 def archdemon():
-    J = humanoid_joints(h=1.0, shoulder=0.17, hip=0.085)
-    head_r = 0.15
-    head_c = J["headBase"] + Vector((0, -0.01, head_r * 0.95))
-    rig = humanoid_rig(J, head_c + Vector((0, 0, head_r)))
-    parts = [bind(humanoid_body(J, "Skin", bulk=1.08), rig, BODY_BONES)]
+    """The Archdemon (player): a muscular demon lord in red plate with gold trim."""
+    H = 1.3
+    J = A.joints(H, female=False, spread=16, bulk=1.08)
+    r = 0.08 * H
+    hc = head_center(J, r)
+    rig = sculpted_rig(J, hc + V3(0, 0, r * 1.1))
+    parts = []
+    BF = A.body_field(J, "Skin", bulk=1.08)
+    tpts = A.tail(BF, V3(0, 0.05 * H, 0.5 * H), 0.7, 0.02 * H, tip_role="Horn", heart=False)
+    rig.add("Tail1", tpts[0], tpts[3], "Hips")
+    rig.add("Tail2", tpts[3], tpts[6], "Tail1")
+    rig.add("Tail3", tpts[6], tpts[9], "Tail2")
+    body = A.make(BF, "Body", faces=8000)
+    torso = A.body_field(J, "Primary", bulk=1.08, arms=False, legs=False, pecs=False, h=0.0045 * H)
+    arms = A.body_field(J, "Primary", bulk=1.08, torso=False, legs=False, h=0.004 * H)
+    legs = A.body_field(J, "Dark", bulk=1.08, torso=False, arms=False, h=0.004 * H)
+
+    head = A.make(A.head_field(hc, r, "FaceDemon", ears=1.0, jaw=1.12, nose=1.1, ear_role="Skin"), "Head", faces=4000)
+    A.face_uv(head, hc, r)
+    parts.append((head, ("rigid", "Head")))
     for side in "LR":
-        for p in hand(J, side, "Skin", scale=1.1, claws="Horn"):
-            parts.append(bind(p, rig, "Hand" + side))
-    parts.append(bind(anime_head("Head", head_c, head_r, "FaceDemon", chin=0.28), rig, "Head"))
-    for p in head_features(head_c, head_r, "Skin", ear_len=1.0):
-        parts.append(bind(p, rig, "Head"))
-    for p in anime_hair(head_c, head_r, "Hair", seed=3, length=0.95, back=1.2, spikes=1.25, bangs=7):
-        parts.append(bind(p, rig, "Head"))
+        parts.append((A.make(A.hand(J, side, "Skin", scale=1.08, claws="Horn", fist=0.25), "Hand", faces=1500), ("rigid", "Hand" + side)))
+
+    hair = A.Hair(hc, r, "Hair")
+    hair.scalp(hairline=0.6)
+    hair.fringe(bottom=0.32, teeth=5, depth=0.42, part=0.2, swoop=0.25, thick=0.09)
+    for i in range(9):   # spikes swept back
+        th = math.radians(-110 + 220 * i / 8)
+        hair.lock((math.sin(th) * 0.5, -0.2 + math.cos(th) * 0.55, 0.8), (math.sin(th) * 0.9, 0.2 + math.cos(th) * 0.75, 0.05),
+                  V3(math.sin(th) * 0.06 * H, 0.08 * H + 0.03 * H * math.cos(th), -0.06 * H - 0.05 * H * abs(math.sin(th))),
+                  0.34, thick=0.45, n=3, taper=0.02, normal=V3(math.sin(th) * 0.4, math.cos(th) * 0.4, 1.0))
+    hm = A.make(hair.F, "Hair", faces=5000)
+    parts.append((hm, ("rigid", "Head")))
+    HF = sdf.Field("Horn", h=0.003 * H)
     for s in (1, -1):
-        parts.append(bind(curved_horn(head_c + Vector((s * head_r * 0.55, 0.0, head_r * 0.7)), s, 0.46, "Horn", curl=1.0, thickness=0.047), rig, "Head"))
+        A.horn(HF, hc + V3(s * r * 0.55, 0.0, r * 0.72), s, 0.24 * H, 0.034 * H, curl=1.0, back=0.75)
+    parts.append((A.make(HF, "Horn", faces=2400), ("rigid", "Head")))
 
-    # Layered plate armor with gold trim.
-    parts.append(bind(plate_shell("Breastplate", J, "Primary"), rig, ["Hips", "Spine", "Chest"]))
-    parts.append(bind(tube("Ridge", curve_pts(J["chest"] + Vector((0, -0.1, 0.07)), J["spine"] + Vector((0, -0.105, -0.02)), (0, -0.02, 0), 4),
-                           [0.012, 0.014, 0.012, 0.008], "Gold", segs=6), rig, ["Chest", "Spine"]))
-    parts.append(bind(lathe("Gorget", [(0.06, J["neck"].z - 0.02), (0.085, J["neck"].z - 0.05), (0.1, J["neck"].z - 0.07)], "Primary", segs=20,
-                            center=(0, J["neck"].y, 0)), rig, "Chest"))
-    parts.append(bind(ring("GorgetTrim", J["neck"].z - 0.07, 0.1, "Gold", center=(0, J["neck"].y, 0)), rig, "Chest"))
-    for k in range(3):
-        z = J["waist"].z + 0.03 - k * 0.035
-        parts.append(bind(ring("AbPlate", z, 0.097 - k * 0.003, "Primary", h=0.014, scale_y=0.8), rig, "Spine" if k == 0 else "Hips"))
-    parts.append(bind(ring("Belt", J["hips"].z + 0.02, 0.124, "Leather", h=0.02, scale_y=0.78), rig, "Hips"))
-    parts.append(bind(blob("Buckle", 0.03, J["hips"] + Vector((0, -0.1, 0.02)), "Gold", scale=(1.2, 0.5, 1.0), subdiv=2), rig, "Hips"))
-    for s, ang in ((0, 0), (1, 1), (-1, 1)):
-        y = -0.095 if ang == 0 else -0.04
-        x = s * 0.09
-        tasset = prism("Tasset", [(-0.045, 0.0), (0.045, 0.0), (0.04, -0.13), (0.0, -0.16), (-0.04, -0.13)], 0.012, "Primary", bevel=0.004,
-                       loc=J["hips"] + Vector((x, y, 0.0)), rot=(8, 0, s * 35))
-        parts.append(bind(tasset, rig, "Hips"))
+    # Breastplate with a gold keel and trim, banded faulds, belt and buckle.
+    ztop = 0.8 * H
+    zw = J["waist"].z - 0.005 * H
+    BP = sdf.Field("Dark", h=0.0045 * H)
+    BP.add(sdf.slab(torso, 0.012 * H, G.zrange(zw, ztop)))
+    BP.add(sdf.slab(torso, 0.016 * H, G.region_and(G.zrange(J["chest"].z - 0.005 * H, ztop - 0.012 * H), G.front(-0.02 * H))), role="Dark")
+    BP.add(sdf.shell(torso, 0.0185 * H, 0.0022 * H, G.region_and(G.near_z(lambda x, y: J["chest"].z - 0.003 * H + 0.0 * x, 0.003 * H), G.front(-0.02 * H))), role="Gold")
+    keel = [V3(0, G.surface_y(torso, 0, z, 0.012 * H), z) for z in np.linspace(zw + 0.01 * H, ztop - 0.02 * H, 5)]
+    BP.chain(keel, [0.006 * H] * 5, k=0.004 * H, role="Gold")
+    BP.add(sdf.shell(torso, 0.015 * H, 0.003 * H, G.zrange(ztop - 0.012 * H, ztop - 0.002 * H)), role="Gold")
+    for k in range(2):
+        z0 = J["hips"].z + 0.01 * H + k * 0.03 * H
+        BP.add(sdf.slab(torso, 0.011 * H + k * 0.001 * H, G.zrange(z0, z0 + 0.026 * H)), role="Dark" if k == 0 else "Primary")
+    BP.add(sdf.slab(torso, 0.016 * H, G.zrange(J["hips"].z - 0.03 * H, J["hips"].z + 0.008 * H)), role="Leather")
+    by = G.surface_y(torso, 0, J["hips"].z - 0.01 * H, 0.016 * H)
+    BP.add(sdf.box(V3(0, by, J["hips"].z - 0.011 * H), (0.024 * H, 0.008 * H, 0.02 * H), round_=0.004 * H), k=0.003 * H, role="Gold")
+    parts.append((A.make(BP, "Breastplate", faces=4500), ("transfer", ["Hips", "Spine", "Chest"])))
+
+    # Tassets and a hanging loincloth.
+    TS = sdf.Field("Primary", h=0.004 * H)
+    zb = J["hips"].z - 0.03 * H
+    for s, ang in ((1, 40), (-1, 40), (1, 75), (-1, 75)):
+        a = math.radians(ang)
+        ctr = V3(s * math.sin(a) * 0.1 * H, -math.cos(a) * 0.075 * H, zb - 0.055 * H)
+        out = V3(s * math.sin(a), -math.cos(a), 0.0)
+        down = V3(0, 0, -1)
+        TS.add(sdf.box(ctr + out * 0.006 * H, (0.036 * H, 0.004 * H, 0.06 * H), axes=(out.cross(down).normalized(), out, (out * 0.25 + down).normalized() * -1), round_=0.003 * H))
+    for sgn in (-1, 1):
+        y0 = (G.surface_y(torso, 0, zb, 0.02 * H, front=sgn < 0) or 0)
+        top = V3(0, y0 + sgn * 0.004 * H, zb - 0.1 * H)
+        tilt = V3(0, sgn * 0.12, 1).normalized()
+        TS.add(sdf.box(top, (0.042 * H, 0.004 * H, 0.105 * H), axes=(V3(1, 0, 0), tilt.cross(V3(1, 0, 0)), tilt), round_=0.003 * H), role="Primary")
+        TS.add(sdf.box(top + V3(0, sgn * 0.002 * H, -0.098 * H), (0.044 * H, 0.0055 * H, 0.008 * H), axes=(V3(1, 0, 0), tilt.cross(V3(1, 0, 0)), tilt), round_=0.002 * H), role="Gold")
+    parts.append((A.make(TS, "Tassets", faces=2000), ("fn", skirt_weights(J, zb, zb - 0.24 * H, follow=0.6))))
+
+    # Layered pauldrons with spikes, bracers, greaves, knee cops and sabatons with talons.
     for s, side in ((1, "L"), (-1, "R")):
-        sh = J["shoulder" + side]
-        for layer in range(3):
-            pr = 0.098 - layer * 0.012
-            pad = lathe("Pauldron", [(0.0, 0.075 - layer * 0.03), (pr * 0.6, 0.07 - layer * 0.03), (pr, 0.03 - layer * 0.03), (pr * 1.02, -0.01 - layer * 0.03), (pr * 0.8, -0.03 - layer * 0.03)],
-                        "Primary" if layer % 2 == 0 else "Dark", segs=18, center=sh + Vector((s * (0.012 + layer * 0.01), 0, 0)))
-            parts.append(bind(pad, rig, "UpperArm" + side))
-        parts.append(bind(ring("PauldronTrim", sh.z - 0.01, 0.1, "Gold", h=0.008, center=(sh.x + s * 0.012, sh.y, 0)), rig, "UpperArm" + side))
+        sh, el, wr = J["shoulder" + side], J["elbow" + side], J["wrist" + side]
+        PD = sdf.Field("Primary", h=0.0035 * H)
+        for k in range(3):
+            c = sh + V3(s * (0.014 + 0.014 * k) * H, 0, (0.012 - 0.03 * k) * H)
+            rr = V3(0.066, 0.066, 0.04) * H * (1 - 0.08 * k)
+            PD.add(G.dome(c, rr, 0.004 * H, cut=G.region_and(G.zrange(c.z - 0.012 * H, 9), G.side(s, abs(sh.x) - 0.035 * H))),
+                   role="Primary" if k != 1 else "Dark")
+        PD.add(sdf.torus(sh + V3(s * 0.012 * H, 0, 0.004 * H), 0.064 * H, 0.004 * H, axis=(0, 0, 1)), role="Gold")
         for k in range(2):
-            parts.append(bind(tube("PauldronSpike", [sh + Vector((s * (0.03 + k * 0.03), 0.01 * k, 0.05)), sh + Vector((s * (0.09 + k * 0.03), 0.03, 0.15 - k * 0.03))],
-                                   [0.02, 0.0], "Horn", segs=7), rig, "UpperArm" + side))
-        parts.append(bind(tube("Bracer", [J["elbow" + side] + Vector((0, 0, -0.02)), J["forearm" + side], J["wrist" + side]], [0.046, 0.047, 0.036], "Primary", segs=14), rig, "LowerArm" + side))
-        parts.append(bind(ring("BracerTrim", J["wrist" + side].z + 0.012, 0.037, "Gold", h=0.006, center=(J["wrist" + side].x, J["wrist" + side].y, 0)), rig, "LowerArm" + side))
-        parts.append(bind(tube("BracerSpike", [J["forearm" + side] + Vector((s * 0.04, 0.01, 0)), J["forearm" + side] + Vector((s * 0.085, 0.03, 0.03))], [0.014, 0.0], "Horn", segs=6), rig, "LowerArm" + side))
-        parts.append(bind(tube("Greave", [J["knee" + side] + Vector((0, 0, 0.02)), J["calf" + side], J["ankle" + side] + Vector((0, 0, -0.01))], [0.056, 0.06, 0.042], "Dark", segs=14), rig, "LowerLeg" + side))
-        parts.append(bind(blob("Kneecap", 0.042, J["knee" + side] + Vector((0, -0.035, 0.01)), "Primary", scale=(1, 0.65, 1.15), subdiv=2), rig, "LowerLeg" + side))
-        parts.append(bind(tube("Boot", [J["ankle" + side] + Vector((0, 0.025, 0.0)), J["toe" + side] + Vector((0, -0.01, 0.0))], [0.045, 0.034], "Dark", segs=12, flat=0.7), rig, "Foot" + side))
+            b0 = sh + V3(s * (0.03 + 0.03 * k) * H, 0.008 * H * k, 0.05 * H - 0.012 * H * k)
+            PD.cone(b0, b0 + V3(s * 0.05 * H, 0.025 * H, 0.09 * H - 0.025 * H * k), 0.014 * H, 0.001 * H, k=0.006 * H, role="Horn")
+        parts.append((A.make(PD, "Pauldron", faces=2200), ("rigid", "UpperArm" + side)))
+        BR = sdf.Field("Primary", h=0.0035 * H)
+        BR.add(sdf.slab(arms, 0.008 * H, G.region_and(G.along(el, wr, 0.12, 0.92), G.side(s, 0.04 * H))))
+        BR.add(sdf.shell(arms, 0.011 * H, 0.0025 * H, G.region_and(G.along(el, wr, 0.84, 0.9), G.side(s, 0.04 * H))), role="Gold")
+        fa = A.lerp(el, wr, 0.45)
+        out = V3(s, 0.15, 0).normalized()
+        BR.cone(fa + out * 0.03 * H, fa + out * 0.075 * H + V3(0, 0.03 * H, 0.03 * H), 0.012 * H, 0.001 * H, k=0.006 * H, role="Horn")
+        parts.append((A.make(BR, "Bracer", faces=1400), ("rigid", "LowerArm" + side)))
+        kn, an = J["knee" + side], J["ankle" + side]
+        GR = sdf.Field("Dark", h=0.0035 * H)
+        GR.add(sdf.slab(legs, 0.008 * H, G.region_and(G.zrange(0.065 * H, kn.z - 0.01 * H), G.side(s, 0.0))))
+        GR.add(G.dome(kn + V3(0, -0.03 * H, 0.004 * H), V3(0.036, 0.022, 0.04) * H, 0.004 * H, cut=G.front(0.02 * H)), k=0.004 * H, role="Primary")
+        GR.cone(kn + V3(0, -0.05 * H, 0.0), kn + V3(0, -0.075 * H, 0.05 * H), 0.01 * H, 0.001 * H, k=0.004 * H, role="Horn")
+        parts.append((A.make(GR, "Greave", faces=1500), ("rigid", "LowerLeg" + side)))
+        SB = sdf.Field("Dark", h=0.0032 * H)
+        SB.add(sdf.slab(legs, 0.009 * H, G.region_and(G.zrange(-1.0, 0.07 * H), G.side(s, 0.0))))
+        to = J["toe" + side]
         for k in (-1, 0, 1):
-            toe = J["toe" + side] + Vector((k * 0.018, -0.03, -0.005))
-            parts.append(bind(tube("ToeClaw", [toe, toe + Vector((0, -0.035, -0.01))], [0.009, 0.0], "Horn", segs=5), rig, "Foot" + side))
-    sword(rig, parts, J, "R", length=0.66)
-    add_wings(rig, parts, J, 0.78, "Wing", "Horn")
-    add_tail(rig, parts, J["hips"] + Vector((0, 0.08, -0.02)), "Skin", "Horn", 0.78)
-    finish_character("demon", rig, parts, "biped", weight=1.0)
-
+            tp = to + V3(k * 0.016 * H, -0.045 * H, -0.004 * H)
+            SB.cone(tp, tp + V3(k * 0.004 * H, -0.03 * H, -0.008 * H), 0.008 * H, 0.001 * H, k=0.004 * H, role="Horn")
+        parts.append((A.make(SB, "Sabaton", faces=1200), ("rigid", "Foot" + side)))
+    CL = sdf.Field("Gold", h=0.003 * H)
+    CL.add(sdf.torus(V3(0, J["chest"].y + 0.006 * H, 0.81 * H), 0.05 * H, 0.006 * H, axis=(0, -0.2, 1)))
+    parts.append((A.make(CL, "Gorget", faces=700), ("rigid", "Chest")))
+    parts += sculpt_sword(J, "R", length=0.66)
+    for s, side in ((1, "L"), (-1, "R")):
+        yb = G.surface_y(torso, s * 0.04 * H, J["chest"].z + 0.04 * H, 0.012 * H, front=False)
+        root = V3(s * 0.04 * H, yb + 0.004 * H, J["chest"].z + 0.04 * H)
+        WF, mem, wrist, tip = A.wing(root, s, 0.8, "Horn", "Wing", bone_r=0.02)
+        rig.add("Wing" + side, root, wrist, "Chest")
+        rig.add("WingTip" + side, wrist, tip, "Wing" + side)
+        parts.append((A.make(WF, "WingBone", faces=1100), ("bind", ["Wing" + side, "WingTip" + side])))
+        parts.append((mem, ("bind", ["Wing" + side, "WingTip" + side])))
+    finish_sculpted("demon", rig, body, parts, "biped", weight=1.0, spread=16)
 
 def princess():
-    J = humanoid_joints(h=0.98, shoulder=0.13, hip=0.07)
-    head_r = 0.145
-    head_c = J["headBase"] + Vector((0, -0.01, head_r * 0.95))
-    rig = humanoid_rig(J, head_c + Vector((0, 0, head_r)))
-    parts = [bind(humanoid_body(J, "SkinPale", female=True, bulk=0.95), rig, BODY_BONES)]
-    for side in "LR":
-        for p in hand(J, side, "SkinPale", scale=0.85):
-            parts.append(bind(p, rig, "Hand" + side))
-    parts.append(bind(anime_head("Head", head_c, head_r, "FacePrincess", chin=0.36, cheek=0.03), rig, "Head"))
-    for p in head_features(head_c, head_r, "SkinPale", ear_len=0.7):
-        parts.append(bind(p, rig, "Head"))
-    for p in anime_hair(head_c, head_r, "HairPrincess", seed=11, length=0.8, back=0.9, spikes=0.6, bangs=9, ahoge=True):
-        parts.append(bind(p, rig, "Head"))
-    # Long ribbon-like strands down the back to the hips, and side locks framing the face.
-    for i in range(11):
-        x = (i - 5) * 0.026
-        top = head_c + Vector((x, head_r * 0.7, head_r * 0.35))
-        bottom = top + Vector((x * 0.6, 0.12, -0.72 + abs(x) * 0.8))
-        pts = curve_pts(top, bottom, (0, 0.1, 0.02), 7, sway=(0.012 * math.sin(i * 1.7), 0, 0))
-        parts.append(bind(tube("LongHair", pts, [0.055, 0.05, 0.046, 0.04, 0.032, 0.02, 0.0], "HairPrincess", segs=8, flat=0.3, ref=(0, 1, 0)),
-                          rig, ["Head", "Chest", "Spine", "Hips"]))
-    for s in (1, -1):
-        top = head_c + Vector((s * head_r * 0.86, -head_r * 0.35, head_r * 0.1))
-        lock = curve_pts(top, top + Vector((s * 0.04, -0.02, -0.34)), (s * 0.03, -0.02, 0), 6)
-        parts.append(bind(tube("SideLock", lock, [0.036, 0.032, 0.028, 0.022, 0.014, 0.0], "HairPrincess", segs=8, flat=0.45, twist=0.8), rig, ["Head", "Chest"]))
-        parts.append(bind(curved_horn(head_c + Vector((s * head_r * 0.5, 0.01, head_r * 0.78)), s, 0.28, "Horn", curl=0.85, thickness=0.031), rig, "Head"))
-        parts.append(bind(blob("Earring", 0.012, head_c + Vector((s * head_r * 0.98, 0.02, -head_r * 0.28)), "Glow", subdiv=1, faceted=True), rig, "Head"))
-    cz = head_c.z + head_r * 0.93
-    parts.append(bind(ring("Crown", cz, 0.08, "Gold", h=0.018, center=(head_c.x, head_c.y + 0.01, 0)), rig, "Head"))
-    for k in range(8):
-        a = 2 * math.pi * k / 8
-        b = head_c + Vector((math.sin(a) * 0.078, 0.01 + math.cos(a) * 0.078, head_r * 0.93 + 0.016))
-        parts.append(bind(tube("CrownSpike", [b, b + Vector((0, 0, 0.065 if k % 2 == 0 else 0.04))], [0.011, 0.0], "Gold", segs=5), rig, "Head"))
-    parts.append(bind(blob("CrownGem", 0.018, head_c + Vector((0, -0.078, head_r * 0.93 + 0.03)), "Glow", subdiv=1, faceted=True), rig, "Head"))
+    """The succubus princess: slender figure, corset gown with a sweetheart neckline, layered
+    frilled skirt, off-shoulder puff sleeves with detached bell cuffs, thigh-high stockings and
+    heeled boots, long sculpted hair with a jagged fringe, curled horns, tiara, wings, heart tail."""
+    H = 1.2
+    J = A.joints(H, female=True, spread=14)
+    r = 0.083 * H
+    hc = head_center(J, r)
+    rig = sculpted_rig(J, hc + V3(0, 0, r * 1.1))
+    parts = []
 
-    # Gown: corset bodice with lacing, ruffled collar, open overskirt over frilled petticoats, bell sleeves, bow.
-    bod = skin("Bodice", [(J["hips"] + Vector((0, 0, 0.03)), (0.123, 0.088)), (J["waist"], (0.074, 0.064)), (J["spine"], (0.086, 0.07)),
-                          (J["chest"], (0.1, 0.082)), (J["neck"] + Vector((0, 0, -0.055)), (0.06, 0.05))], [(0, 1), (1, 2), (2, 3), (3, 4)], "Cloth", subsurf=2)
-    parts.append(bind(bod, rig, ["Hips", "Spine", "Chest"]))
-    # A fuller bust, shaped into the bodice fabric, with a gold trim along the neckline.
-    bust_z = J["chest"].z - 0.005
+    BF = A.body_field(J, "SkinPale", female=True, bust=1.1)
+    BF.paint(lambda x, y, z: z - 0.37 * H, "Stocking")
+    tail_root = V3(0, 0.05 * H, 0.5 * H)
+    tpts = A.tail(BF, tail_root, 0.5, 0.016 * H, tip_role="Cloth", heart=True)
+    rig.add("Tail1", tpts[0], tpts[3], "Hips")
+    rig.add("Tail2", tpts[3], tpts[6], "Tail1")
+    rig.add("Tail3", tpts[6], tpts[9], "Tail2")
+    body = A.make(BF, "Body", faces=8000)
+
+    torso = A.body_field(J, "Cloth", female=True, bust=1.1, arms=False, legs=False, h=0.004 * H)
+    legs = A.body_field(J, "Dark", female=True, torso=False, arms=False, h=0.004 * H)
+
+    head = A.make(A.head_field(hc, r, "FacePrincess", ears=0.55, ear_role="SkinPale"), "Head", faces=4500)
+    A.face_uv(head, hc, r)
+    parts.append((head, ("rigid", "Head")))
+    for side in "LR":
+        parts.append((A.make(A.hand(J, side, "SkinPale", scale=1.0), "Hand", faces=1200), ("rigid", "Hand" + side)))
+
+    hair = A.Hair(hc, r, "HairPrincess")
+    hair.scalp(hairline=0.5)
+    hair.fringe(bottom=0.12, teeth=8, depth=0.3, part=0.35, swoop=0.1)
+    for i in range(9):   # long back hair: broad locks fanned around the back of the head
+        th = math.radians(-100 + 200 * i / 8)
+        L = 0.5 * H * (0.82 + 0.18 * math.cos(th))
+        hair.lock((math.sin(th) * 0.7, 0.35 + math.cos(th) * 0.45, 0.62), (math.sin(th) * 0.88, 0.3 + math.cos(th) * 0.7, -0.25),
+                  V3(math.sin(th) * 0.05, 0.03 + 0.03 * math.cos(th), -L), 0.38, thick=0.42, curl=0.15, n=6,
+                  sway=V3(0.012 * math.sin(i * 2.1), 0.01, 0), normal=V3(math.sin(th), math.cos(th), 0))
+    for s in (1, -1):    # side locks framing the face
+        hair.lock((s * 0.72, -0.42, 0.55), (s * 0.97, -0.32, -0.2), V3(s * 0.02, -0.02, -0.28 * H), 0.26, thick=0.34, curl=0.1, n=4,
+                  normal=V3(s, -0.35, 0))
+    hair.strand([hc + V3(0, -0.2 * r, 1.12 * r), hc + V3(0.1 * r, -0.4 * r, 1.45 * r), hc + V3(0.35 * r, -0.55 * r, 1.5 * r), hc + V3(0.42 * r, -0.4 * r, 1.3 * r)],
+                [0.07 * r, 0.06 * r, 0.045 * r, 0.025 * r], flat=(V3(1, 0, 0), 0.45))
+    hm = A.make(hair.F, "Hair", faces=7500)
+    shade.tint(hm, shade.gradient(hc + V3(0, 0, r), hc + V3(0, 0, -0.55 * H), 1.0, 0.82))
+    parts.append((hm, ("transfer", HAIR_BONES, [head])))
+
+    HF = sdf.Field("Horn", h=0.0028 * H)
     for s in (1, -1):
-        bust = blob("Bust", 0.058, (s * 0.045, J["chest"].y - 0.052, bust_z), "Cloth", scale=(0.95, 0.88, 0.86), subdiv=3)
-        for v in bust.data.vertices:   # soften the underside into the waist
-            if v.co.z < bust_z:
-                v.co.y += (bust_z - v.co.z) * 0.35
-        parts.append(bind(bust, rig, "Chest"))
-    neckline = tube("Neckline", curve_pts((-0.1, J["chest"].y - 0.06, bust_z + 0.045), (0.1, J["chest"].y - 0.06, bust_z + 0.045), (0, -0.05, -0.012), 7),
-                    [0.006] * 7, "Gold", segs=6)
-    parts.append(bind(neckline, rig, "Chest"))
-    for k in range(3):
-        z = J["waist"].z - 0.04 + k * 0.04
+        A.horn(HF, hc + V3(s * r * 0.5, 0.05 * r, r * 0.72), s, 0.15 * H, 0.022 * H, curl=1.15, back=1.0, rise=0.8)
+    parts.append((A.make(HF, "Horn", faces=1600), ("rigid", "Head")))
+    CF = sdf.Field("Gold", h=0.0022 * H)
+    cc = hc + V3(0, 0.0, 0.86 * r)
+    CF.add(sdf.torus(cc, 0.72 * r, 0.05 * r, axis=(0, -0.3, 1)))
+    for k in range(7):
+        a = math.radians(-60 + 20 * k)
+        b = cc + V3(math.sin(a) * 0.72 * r, -math.cos(a) * 0.69 * r, 0.21 * r * math.cos(a) - 0.05 * r)
+        hgt = (0.6 if k == 3 else 0.38 if k % 2 == 1 else 0.26) * r
+        CF.cone(b, b + V3(0, -0.04 * r, hgt), 0.07 * r, 0.004 * r, k=0.03 * r)
+    parts.append((A.make(CF, "Crown", faces=1000), ("rigid", "Head")))
+    gem = blob("CrownGem", 0.008 * H, cc + V3(0, -0.72 * r, 0.22 * r), "Glow", subdiv=1, faceted=True)
+    parts.append((gem, ("rigid", "Head")))
+    for s in (1, -1):
+        parts.append((blob("Earring", 0.007 * H, hc + V3(s * r * 0.95, 0.06 * r, -0.42 * r), "Glow", subdiv=1, faceted=True), ("rigid", "Head")))
+
+    # Corset bodice from the hips to a sweetheart neckline, with gold trims and front lacing.
+    zc = J["chest"].z
+
+    def neckline(x, y):
+        return zc + 0.012 * H - 0.03 * H * np.exp(-(x / (0.014 * H)) ** 2) + 0.05 * H * np.clip(y / (0.05 * H), 0, 1)
+    zb = J["hips"].z - 0.01 * H
+    BOD = sdf.Field("Cloth", h=0.0032 * H)
+    BOD.add(sdf.shell(torso, 0.006 * H, 0.0034 * H, G.region_and(G.ztop(neckline), G.zrange(zb, 2.0))))
+    parts.append((A.make(BOD, "Bodice", faces=3200), ("transfer", ["Hips", "Spine", "Chest"])))
+    TR = sdf.Field("Gold", h=0.0026 * H)
+    TR.add(sdf.shell(torso, 0.0095 * H, 0.0028 * H, G.near_z(lambda x, y: neckline(x, y) - 0.004 * H, 0.0045 * H)))
+    for k in range(4):
+        z = J["waist"].z - 0.035 * H + k * 0.025 * H
+        y0 = G.surface_y(torso, 0.012 * H, z, 0.0095 * H)
+        y1 = G.surface_y(torso, 0.012 * H, z + 0.022 * H, 0.0095 * H)
         for s in (1, -1):
-            parts.append(bind(tube("Lacing", [Vector((-s * 0.02, -0.083, z)), Vector((s * 0.02, -0.084, z + 0.04))], [0.004, 0.004], "Gold", segs=5), rig, ["Spine", "Chest"]))
-    collar = lathe("Collar", [(0.06, J["neck"].z - 0.04), (0.09, J["neck"].z - 0.02), (0.11, J["neck"].z + 0.0)], "Lace", segs=32,
-                   wave=lambda t, i: 1.0 + 0.1 * math.sin(t * 16) * (i / 2), center=(0, J["neck"].y + 0.01, 0))
-    parts.append(bind(collar, rig, "Chest"))
-    waist = J["hips"].z + 0.04
-    frill = lambda t, i: 1.0 + (0.05 * math.sin(t * 14) if i >= 4 else 0.0)
-    parts.append(bind(lathe("Petticoat", [(0.0, waist), (0.11, waist), (0.2, waist - 0.18), (0.3, waist - 0.36), (0.38, 0.06), (0.41, 0.03), (0.38, 0.0), (0.0, 0.0)],
-                            "Lace", segs=40, wave=frill), rig, "Hips"))
-    skirt = lathe("Skirt", [(0.118, waist + 0.01), (0.16, waist - 0.1), (0.24, waist - 0.25), (0.33, waist - 0.4), (0.4, waist - 0.5), (0.425, 0.04)],
-                  "Cloth", segs=36, arc=(305, 595), wave=lambda t, i: 1.0 + 0.04 * math.sin(t * 9) * (i / 5))
-    parts.append(bind(skirt, rig, "Hips"))
-    parts.append(bind(lathe("Hem", [(0.42, 0.06), (0.432, 0.045), (0.42, 0.03)], "Gold", segs=36, arc=(305, 595)), rig, "Hips"))
-    parts.append(bind(ring("WaistTrim", waist, 0.12, "Gold", h=0.01, scale_y=0.8), rig, "Hips"))
-    for s in (1, -1):   # back bow
-        loop = curve_pts(Vector((0, 0.09, waist + 0.01)), Vector((s * 0.12, 0.13, waist + 0.06)), (0, 0.04, 0.06), 5)
-        parts.append(bind(tube("Bow", loop, [0.02, 0.04, 0.045, 0.035, 0.0], "Cloth", segs=8, flat=0.35, ref=(0, 1, 0)), rig, "Hips"))
-        tail = curve_pts(Vector((s * 0.02, 0.1, waist)), Vector((s * 0.07, 0.16, waist - 0.3)), (s * 0.02, 0.03, 0), 5)
-        parts.append(bind(tube("BowTail", tail, [0.02, 0.03, 0.032, 0.03, 0.0], "Cloth", segs=8, flat=0.25, ref=(0, 1, 0)), rig, "Hips"))
+            TR.cone(V3(-s * 0.012 * H, y0, z), V3(s * 0.012 * H, y1, z + 0.022 * H), 0.0028 * H, 0.0028 * H)
+    parts.append((A.make(TR, "Trim", faces=1500), ("transfer", ["Hips", "Spine", "Chest"])))
+
+    # Skirt: a frilled lace petticoat under a folded overskirt, gold waistband, back bow.
+    zt = J["hips"].z + 0.03 * H
+    hem_f, hem_b = 0.37 * H, 0.31 * H
+    SK = sdf.Field("Cloth", h=0.003 * H)
+    SK.add(G.skirt((0, 0.006 * H), zt, (0.102 * H, 0.074 * H), (0.2 * H, 0.18 * H), G.hem_front_back(hem_f, hem_b), folds=9, fold_amp=0.1, thick=0.0045 * H))
+    parts.append((A.make(SK, "Skirt", faces=3600), ("fn", skirt_weights(J, zt, hem_b))))
+    PT = sdf.Field("Lace", h=0.003 * H)
+    PT.add(G.skirt((0, 0.006 * H), zt - 0.02 * H, (0.096 * H, 0.069 * H), (0.186 * H, 0.166 * H), G.hem_front_back(hem_f - 0.025 * H, hem_b - 0.025 * H),
+                   folds=13, fold_amp=0.035, thick=0.004 * H, ruffle=0.05, ruffle_freq=30, phase=0.7))
+    parts.append((A.make(PT, "Petticoat", faces=3600), ("fn", skirt_weights(J, zt, hem_b - 0.025 * H))))
+    WB = sdf.Field("Gold", h=0.0026 * H)
+    WB.add(G.skirt((0, 0.006 * H), zt + 0.004 * H, (0.106 * H, 0.078 * H), (0.108 * H, 0.08 * H), lambda a: zt - 0.012 * H + 0.0 * np.asarray(a),
+                   folds=1, fold_amp=0.0, thick=0.004 * H))
+    parts.append((A.make(WB, "Waistband", faces=700), ("rigid", "Hips")))
+    BW = sdf.Field("Cloth", h=0.003 * H)
+    yb = G.surface_y(torso, 0.0, zt, 0.01 * H, front=False)
+    bc = V3(0, yb + 0.012 * H, zt)
+    for s in (1, -1):
+        BW.chain([bc, bc + V3(s * 0.04 * H, 0.015 * H, 0.03 * H), bc + V3(s * 0.075 * H, 0.012 * H, 0.012 * H), bc + V3(s * 0.06 * H, 0.008 * H, -0.02 * H), bc],
+                 [0.008 * H, 0.016 * H, 0.016 * H, 0.012 * H, 0.008 * H], k=0.004 * H, flat=(V3(0, 1, 0), 0.3))
+        BW.chain([bc, bc + V3(s * 0.02 * H, 0.02 * H, -0.08 * H), bc + V3(s * 0.035 * H, 0.03 * H, -0.17 * H)], [0.008 * H, 0.014 * H, 0.016 * H],
+                 k=0.004 * H, flat=(V3(0, 1, 0), 0.25))
+    BW.sphere(bc, 0.012 * H, k=0.004 * H)
+    parts.append((A.make(BW, "Bow", faces=1000), ("rigid", "Hips")))
+
+    # Off-shoulder puff sleeves, detached bell sleeves with lace cuffs, stocking lace tops.
+    LC = sdf.Field("Lace", h=0.0026 * H)
+    for side in "LR":
+        sh, el, wr = J["shoulder" + side], J["elbow" + side], J["wrist" + side]
+        d = (wr - el).normalized()
+        PF = sdf.Field("Cloth", h=0.003 * H)
+        PF.add(G.ruffled_ellipsoid(A.lerp(sh, el, 0.24), (0.037 * H, 0.039 * H, 0.035 * H), amp=0.1, freq=9))
+        parts.append((A.make(PF, "Puff", faces=900), ("rigid", "UpperArm" + side)))
+        SL = sdf.Field("Cloth", h=0.003 * H)
+        SL.add(G.tube_shell(A.lerp(el, wr, 0.08), wr + d * 0.02 * H, 0.025 * H, 0.04 * H, 0.0032 * H))
+        parts.append((A.make(SL, "Sleeve", faces=900), ("rigid", "LowerArm" + side)))
+        CU = sdf.Field("Lace", h=0.0026 * H)
+        CU.add(G.tube_shell(wr + d * 0.012 * H, wr + d * 0.05 * H, 0.04 * H, 0.05 * H, 0.0026 * H, ruffle=0.12, freq=14))
+        parts.append((A.make(CU, "Cuff", faces=800), ("rigid", "LowerArm" + side)))
+    LC.add(sdf.shell(legs, 0.003 * H, 0.0028 * H, G.zrange(0.355 * H, 0.378 * H)))
+    parts.append((A.make(LC, "StockingTop", faces=1000), ("transfer", ["UpperLegL", "UpperLegR"])))
+
+    BT = sdf.Field("Dark", h=0.003 * H)
+    BT.add(sdf.slab(legs, 0.0055 * H, G.zrange(-1.0, 0.14 * H)))
+    for side in "LR":
+        an = J["ankle" + side]
+        BT.add(sdf.box(an + V3(0, 0.03 * H, -0.03 * H), (0.011 * H, 0.012 * H, 0.02 * H), round_=0.004 * H), k=0.004 * H)
+        BT.add(sdf.torus(an + V3(0, 0.0, 0.088 * H), 0.025 * H, 0.004 * H), k=0.002 * H, role="Gold")
+    parts.append((A.make(BT, "Boots", faces=1800), ("transfer", ["LowerLegL", "LowerLegR", "FootL", "FootR"])))
+
+    NK = sdf.Field("Dark", h=0.0022 * H)
+    NK.add(sdf.torus(V3(0, 0.002 * H, 0.846 * H), 0.03 * H, 0.0035 * H))
+    parts.append((A.make(NK, "Choker", faces=400), ("rigid", "Neck")))
+    py = G.surface_y(torso, 0.0, 0.82 * H, 0.0, span=0.3)
+    parts.append((blob("Pendant", 0.008 * H, V3(0, (py or -0.03 * H) - 0.006 * H, 0.818 * H), "Glow", subdiv=1, faceted=True), ("rigid", "Chest")))
+
+    # Wings rooted between the shoulder blades.
     for s, side in ((1, "L"), (-1, "R")):
-        parts.append(bind(blob("PuffSleeve", 0.062, J["shoulder" + side] + Vector((s * 0.02, 0, -0.02)), "Cloth", scale=(1, 1, 0.9), subdiv=3, lumps=0.05), rig, "UpperArm" + side))
-        sleeve = lathe("BellSleeve", [(0.03, 0.0), (0.04, -0.08), (0.06, -0.15), (0.075, -0.18)], "Lace", segs=18,
-                       wave=lambda t, i: 1.0 + 0.08 * math.sin(t * 10) * (i / 3))
-        e = J["elbow" + side]
-        xform(sleeve, (0, 0, 0), (0, 0, 0))
-        xform(sleeve, e + Vector((0, 0, -0.005)))
-        parts.append(bind(sleeve, rig, "LowerArm" + side))
-    parts.append(bind(ring("Necklace", J["neck"].z - 0.045, 0.052, "Gold", h=0.005, center=(0, J["neck"].y, 0)), rig, "Chest"))
-    parts.append(bind(blob("Pendant", 0.016, J["neck"] + Vector((0, -0.062, -0.052)), "Glow", subdiv=1, faceted=True), rig, "Chest"))
-    add_wings(rig, parts, J, 0.44, "Wing", "Horn", droop=0.04)
-    add_tail(rig, parts, J["hips"] + Vector((0, 0.12, 0.0)), "SkinPale", "Cloth", 0.56, heart=True)
-    finish_character("princess", rig, parts, "biped", weight=0.6, grace=1.0)
+        yb = G.surface_y(torso, s * 0.035 * H, J["chest"].z + 0.04 * H, 0.0, front=False)
+        root = V3(s * 0.035 * H, yb + 0.004 * H, J["chest"].z + 0.04 * H)
+        WF, mem, wrist, tip = A.wing(root, s, 0.44, "Horn", "Wing", droop=0.04, bone_r=0.012)
+        rig.add("Wing" + side, root, wrist, "Chest")
+        rig.add("WingTip" + side, wrist, tip, "Wing" + side)
+        parts.append((A.make(WF, "WingBone", faces=900), ("bind", ["Wing" + side, "WingTip" + side])))
+        parts.append((mem, ("bind", ["Wing" + side, "WingTip" + side])))
+    finish_sculpted("princess", rig, body, parts, "biped", weight=0.6, grace=1.0, spread=14)
+
+def height_weights(stops):
+    """Blend bones by height: stops = [(bone, z), ...] from top to bottom."""
+    def fn(P, bones):
+        W = np.zeros((len(P), len(bones)))
+        z = P[:, 2]
+        names = [s[0] for s in stops]
+        zs = [s[1] for s in stops]
+        for i, (b, zb) in enumerate(stops):
+            j = bones.index(b)
+            if i == 0:
+                w = np.clip((z - zs[1]) / max(zb - zs[1], 1e-6), 0, 1) if len(stops) > 1 else np.ones(len(P))
+            elif i == len(stops) - 1:
+                w = np.clip((zs[i - 1] - z) / max(zs[i - 1] - zb, 1e-6), 0, 1)
+            else:
+                up = np.clip((zs[i - 1] - z) / max(zs[i - 1] - zb, 1e-6), 0, 1)
+                dn = np.clip((z - zs[i + 1]) / max(zb - zs[i + 1], 1e-6), 0, 1)
+                w = np.where(z >= zb, up, dn)
+            W[:, j] = np.maximum(W[:, j], w)
+        return W
+    return fn
+
+
+def plate_limbs(parts, J, H, arms, legs, role="Metal", trim="Gold", couters=True):
+    """Rerebraces, couters, vambraces, cuisses, poleyns, greaves and sabatons."""
+    for s, side in ((1, "L"), (-1, "R")):
+        sh, el, wr = J["shoulder" + side], J["elbow" + side], J["wrist" + side]
+        UA = sdf.Field(role, h=0.0035 * H)
+        UA.add(sdf.slab(arms, 0.007 * H, G.region_and(G.along(sh, el, 0.4, 0.9), G.side(s, 0.04 * H))))
+        parts.append((A.make(UA, "Rerebrace", faces=800), ("rigid", "UpperArm" + side)))
+        LA = sdf.Field(role, h=0.0035 * H)
+        LA.add(sdf.slab(arms, 0.008 * H, G.region_and(G.along(el, wr, 0.1, 0.93), G.side(s, 0.04 * H))))
+        if couters:
+            ax = (wr - el).normalized()
+            LA.add(G.dome(el + V3(0, 0.012 * H, 0), V3(0.034, 0.034, 0.03) * H, 0.004 * H, cut=G.back(-0.01 * H)), k=0.003 * H)
+        LA.add(sdf.shell(arms, 0.011 * H, 0.0024 * H, G.region_and(G.along(el, wr, 0.85, 0.91), G.side(s, 0.04 * H))), role=trim)
+        parts.append((A.make(LA, "Vambrace", faces=1200), ("rigid", "LowerArm" + side)))
+        kn, hp = J["knee" + side], J["hip" + side]
+        UL = sdf.Field(role, h=0.0035 * H)
+        UL.add(sdf.slab(legs, 0.008 * H, G.region_and(G.zrange(kn.z + 0.025 * H, hp.z - 0.05 * H), G.side(s, 0.0))))
+        UL.add(G.dome(kn + V3(0, -0.028 * H, 0.006 * H), V3(0.038, 0.024, 0.042) * H, 0.004 * H, cut=G.front(0.018 * H)), k=0.004 * H)
+        parts.append((A.make(UL, "Cuisse", faces=1200), ("fn", lambda P, bones, s=side, kz=kn.z: _knee_split(P, bones, s, kz, H))))
+        LL = sdf.Field(role, h=0.0035 * H)
+        LL.add(sdf.slab(legs, 0.008 * H, G.region_and(G.zrange(0.07 * H, kn.z - 0.012 * H), G.side(s, 0.0))))
+        LL.add(sdf.shell(legs, 0.011 * H, 0.0024 * H, G.region_and(G.zrange(0.07 * H, 0.078 * H), G.side(s, 0.0))), role=trim)
+        parts.append((A.make(LL, "Greave", faces=1000), ("rigid", "LowerLeg" + side)))
+        FT = sdf.Field(role, h=0.0032 * H)
+        FT.add(sdf.slab(legs, 0.009 * H, G.region_and(G.zrange(-1.0, 0.075 * H), G.side(s, 0.0))))
+        parts.append((A.make(FT, "Sabaton", faces=900), ("rigid", "Foot" + side)))
+
+
+def _knee_split(P, bones, side, kz, H):
+    W = np.zeros((len(P), len(bones)))
+    t = np.clip((P[:, 2] - (kz - 0.01 * H)) / (0.05 * H), 0, 1)
+    W[:, bones.index("UpperLeg" + side)] = t
+    W[:, bones.index("LowerLeg" + side)] = 1 - t
+    return W
+
+
+def pauldrons(parts, J, H, role, trim, layers=3, spikes=0, spike_role="Horn", flat=0.04):
+    for s, side in ((1, "L"), (-1, "R")):
+        sh = J["shoulder" + side]
+        PD = sdf.Field(role, h=0.0035 * H)
+        for k in range(layers):
+            c = sh + V3(s * (0.014 + 0.014 * k) * H, 0, (0.012 - 0.03 * k) * H)
+            rr = V3(0.064, 0.064, flat) * H * (1 - 0.08 * k)
+            PD.add(G.dome(c, rr, 0.004 * H, cut=G.region_and(G.zrange(c.z - 0.012 * H, 9), G.side(s, abs(sh.x) - 0.035 * H))))
+        PD.add(sdf.torus(sh + V3(s * 0.014 * H, 0, 0.0), 0.063 * H, 0.0042 * H, axis=(0, 0, 1)), role=trim)
+        for k in range(spikes):
+            b0 = sh + V3(s * (0.03 + 0.03 * k) * H, 0.008 * H * k, 0.045 * H - 0.012 * H * k)
+            PD.cone(b0, b0 + V3(s * 0.05 * H, 0.025 * H, 0.09 * H - 0.025 * H * k), 0.014 * H, 0.001 * H, k=0.006 * H, role=spike_role)
+        parts.append((A.make(PD, "Pauldron", faces=1800), ("rigid", "UpperArm" + side)))
 
 
 def crusader():
-    J = humanoid_joints(h=1.0, shoulder=0.16, hip=0.085)
-    head_r = 0.14
-    head_c = J["headBase"] + Vector((0, -0.01, head_r * 0.95))
-    rig = humanoid_rig(J, head_c + Vector((0, 0, head_r)))
-    parts = [bind(humanoid_body(J, "Chain", bulk=1.12, subsurf=1), rig, BODY_BONES)]
+    """A templar of the human army in full plate: great helm with crest and plume, tabard with a
+    gold cross, red cape, kite shield and longsword."""
+    H = 1.28
+    J = A.joints(H, female=False, spread=16, bulk=1.1)
+    r = 0.08 * H
+    hc = head_center(J, r)
+    rig = sculpted_rig(J, hc + V3(0, 0, r * 1.1))
+    parts = []
+    body = A.make(A.body_field(J, "Chain", bulk=1.1), "Body", faces=7000)
+    torso = A.body_field(J, "Metal", bulk=1.1, arms=False, legs=False, pecs=False, h=0.0045 * H)
+    arms = A.body_field(J, "Metal", bulk=1.1, torso=False, legs=False, h=0.004 * H)
+    legs = A.body_field(J, "Metal", bulk=1.1, torso=False, arms=False, h=0.004 * H)
     for side in "LR":
-        for p in hand(J, side, "Metal", scale=1.15):
-            parts.append(bind(p, rig, "Hand" + side))
-    helm = lathe("Helm", [(0.0, head_r * 1.18), (0.07, head_r * 1.1), (0.12, head_r * 0.82), (0.148, head_r * 0.2), (0.148, -head_r * 0.75),
-                          (0.135, -head_r * 0.92), (0.0, -head_r * 0.92)], "Metal", segs=28, center=head_c)
-    parts.append(bind(helm, rig, "Head"))
-    parts.append(bind(tube("Crest", curve_pts(head_c + Vector((0, -0.13, head_r * 0.6)), head_c + Vector((0, 0.15, head_r * 0.2)), (0, 0, head_r * 0.62), 7),
-                           [0.012, 0.016, 0.018, 0.018, 0.016, 0.012, 0.008], "Gold", segs=6, flat=2.0, ref=(1, 0, 0)), rig, "Head"))
-    parts.append(bind(bevel_box("Visor", (0.2, 0.03, 0.022), head_c + Vector((0, -0.145, 0.012)), "Dark", bevel=0.005), rig, "Head"))
-    for k in range(4):
-        parts.append(bind(bevel_box("Breath", (0.012, 0.02, 0.03), head_c + Vector((-0.03 + k * 0.02, -0.146, -0.06)), "Dark", bevel=0.003), rig, "Head"))
-    plume = tube("Plume", curve_pts(head_c + Vector((0, 0.02, head_r * 1.15)), head_c + Vector((0, 0.3, head_r * 0.5)), (0, 0.05, head_r * 0.6), 6),
-                 [0.03, 0.05, 0.055, 0.045, 0.03, 0.0], "Primary", segs=9, flat=0.4, ref=(1, 0, 0))
-    parts.append(bind(plume, rig, "Head"))
-    parts.append(bind(plate_shell("Breastplate", J, "Metal", grow=0.004, subsurf=1), rig, ["Hips", "Spine", "Chest"]))
-    parts.append(bind(lathe("Gorget", [(0.06, J["neck"].z - 0.02), (0.085, J["neck"].z - 0.05), (0.1, J["neck"].z - 0.07)], "Metal", segs=20, center=(0, J["neck"].y, 0)), rig, "Chest"))
-    parts.append(bind(lathe("Mail", [(0.12, J["hips"].z + 0.02), (0.135, J["hips"].z - 0.08), (0.15, J["hips"].z - 0.22)], "Chain", segs=24,
-                            wave=lambda t, i: 1.0 + 0.03 * math.sin(t * 12) * i), rig, "Hips"))
-    for front in (True, False):
-        y = -0.1 if front else 0.1
-        tab = tube("Tabard", [J["chest"] + Vector((0, y, 0.04)), J["hips"] + Vector((0, y * 1.05, 0)), J["hips"] + Vector((0, y * 1.12, -0.28))],
-                   [0.085, 0.09, 0.088], "White", segs=10, flat=0.1, ref=(0, 1, 0))
-        parts.append(bind(tab, rig, ["Chest", "Spine", "Hips"]))
-    parts.append(bind(bevel_box("CrossV", (0.03, 0.012, 0.22), J["spine"] + Vector((0, -0.113, 0.0)), "Gold", bevel=0.004), rig, "Spine"))
-    parts.append(bind(bevel_box("CrossH", (0.13, 0.012, 0.03), J["spine"] + Vector((0, -0.113, 0.045)), "Gold", bevel=0.004), rig, "Spine"))
-    cape = lathe("Cape", [(0.12, J["neck"].z - 0.03), (0.15, J["chest"].z), (0.17, J["spine"].z), (0.2, J["hips"].z - 0.1), (0.22, J["hips"].z - 0.32)],
-                 "Primary", segs=16, arc=(30, 150), wave=lambda t, i: 1.0 + 0.07 * math.sin(t * 14) * (i / 4), center=(0, 0.05, 0))
-    parts.append(bind(cape, rig, ["Chest", "Spine", "Hips"]))
-    for s, side in ((1, "L"), (-1, "R")):
-        sh = J["shoulder" + side]
-        for layer in range(2):
-            pr = 0.1 - layer * 0.014
-            parts.append(bind(lathe("Pauldron", [(0.0, 0.07 - layer * 0.03), (pr * 0.6, 0.066 - layer * 0.03), (pr, 0.03 - layer * 0.03), (pr * 1.02, -0.015 - layer * 0.03), (pr * 0.78, -0.035 - layer * 0.03)],
-                                    "Metal", segs=18, center=sh + Vector((s * (0.012 + layer * 0.012), 0, 0))), rig, "UpperArm" + side))
-        parts.append(bind(ring("Rim", sh.z - 0.015, 0.102, "Gold", h=0.007, center=(sh.x + s * 0.012, sh.y, 0)), rig, "UpperArm" + side))
-        parts.append(bind(tube("Vambrace", [J["elbow" + side], J["forearm" + side], J["wrist" + side]], [0.048, 0.049, 0.04], "Metal", segs=14), rig, "LowerArm" + side))
-        parts.append(bind(tube("Greave", [J["knee" + side] + Vector((0, 0, 0.02)), J["calf" + side], J["ankle" + side]], [0.055, 0.058, 0.042], "Metal", segs=14), rig, "LowerLeg" + side))
-        parts.append(bind(blob("Poleyn", 0.045, J["knee" + side] + Vector((0, -0.035, 0.01)), "Metal", scale=(1, 0.6, 1.1), subdiv=2), rig, "LowerLeg" + side))
-        parts.append(bind(tube("Sabaton", [J["ankle" + side], J["toe" + side]], [0.046, 0.036], "Metal", segs=12, flat=0.7), rig, "Foot" + side))
+        parts.append((A.make(A.hand(J, side, "Metal", scale=1.15, fist=0.45), "Gauntlet", faces=1200), ("rigid", "Hand" + side)))
+
+    HM = sdf.Field("Metal", h=0.0032 * H)
+    HM.cone(hc + V3(0, 0.04 * r, -0.8 * r), hc + V3(0, 0.04 * r, 0.25 * r), 1.04 * r, 1.0 * r)
+    HM.sphere(hc + V3(0, 0.04 * r, 0.22 * r), 1.0 * r, k=0.12 * r)
+    HM.add(sdf.box(hc + V3(0, -1.05 * r, 0.02 * r), (0.62 * r, 0.3 * r, 0.05 * r)), op="subtract", k=0.01 * r)
+    HM.add(sdf.box(hc + V3(0, -1.0 * r, -0.2 * r), (0.06 * r, 0.12 * r, 0.25 * r), round_=0.03 * r), k=0.02 * r)
+    for k in range(3):
+        for j in range(2):
+            HM.sphere(hc + V3(0.25 * r + 0.15 * r * j, -1.0 * r, -0.35 * r - 0.14 * r * k), 0.045 * r, op="subtract")
+    HM.add(sdf.torus(hc + V3(0, 0.04 * r, -0.78 * r), 1.03 * r, 0.06 * r), role="Gold")
+    HM.add(sdf.torus(hc + V3(0, 0.04 * r, 0.12 * r), 1.03 * r, 0.04 * r), role="Gold")
+    crest = [hc + V3(0, 0.04 * r, 0.22 * r) + V3(0, -math.cos(a), math.sin(a)) * 1.03 * r for a in np.linspace(0.35, math.pi - 0.2, 7)]
+    HM.chain(crest, [0.07 * r] * 7, k=0.03 * r, flat=(V3(1, 0, 0), 0.4), role="Gold")
+    parts.append((A.make(HM, "Helm", faces=4000), ("rigid", "Head")))
+    PL = sdf.Field("Primary", h=0.003 * H)
+    top = hc + V3(0, 0.1 * r, 1.25 * r)
+    PL.chain([top, top + V3(0, 0.12 * H, 0.03 * H), top + V3(0, 0.22 * H, -0.06 * H), top + V3(0, 0.26 * H, -0.18 * H)],
+             [0.02 * H, 0.04 * H, 0.035 * H, 0.008 * H], k=0.01 * H, flat=(V3(1, 0, 0), 0.35))
+    parts.append((A.make(PL, "Plume", faces=1200), ("rigid", "Head")))
+
+    zw = J["waist"].z - 0.02 * H
+    BP = sdf.Field("Metal", h=0.0045 * H)
+    BP.add(sdf.slab(torso, 0.013 * H, G.zrange(zw, 0.8 * H)))
+    keel = [V3(0, G.surface_y(torso, 0, z, 0.013 * H), z) for z in np.linspace(zw + 0.01 * H, 0.78 * H, 5)]
+    BP.chain(keel, [0.005 * H] * 5, k=0.006 * H)
+    BP.add(sdf.shell(torso, 0.016 * H, 0.003 * H, G.zrange(0.786 * H, 0.798 * H)), role="Gold")
+    for k in range(3):
+        z0 = J["hips"].z - 0.055 * H + k * 0.03 * H
+        BP.add(sdf.slab(torso, 0.016 * H - k * 0.0015 * H, G.zrange(z0, z0 + 0.028 * H)))
+    cy = G.surface_y(torso, 0, J["chest"].z, 0.013 * H)
+    BP.add(sdf.box(V3(0, cy - 0.003 * H, J["chest"].z - 0.01 * H), (0.011 * H, 0.004 * H, 0.06 * H)), role="Gold")
+    BP.add(sdf.box(V3(0, cy - 0.003 * H, J["chest"].z + 0.018 * H), (0.04 * H, 0.004 * H, 0.011 * H)), role="Gold")
+    BP.add(sdf.slab(torso, 0.02 * H, G.zrange(J["hips"].z - 0.068 * H, J["hips"].z - 0.052 * H)), role="Leather")
+    parts.append((A.make(BP, "Cuirass", faces=4200), ("transfer", ["Hips", "Spine", "Chest"])))
+    TB = sdf.Field("White", h=0.0035 * H)
+    zt = J["hips"].z - 0.06 * H
+    for sgn in (-1, 1):
+        y0 = G.surface_y(torso, 0, zt, 0.024 * H, front=sgn < 0) or 0
+        tilt = V3(0, sgn * 0.1, 1).normalized()
+        ctr = V3(0, y0 + sgn * 0.006 * H, zt - 0.11 * H)
+        ax = (V3(1, 0, 0), tilt.cross(V3(1, 0, 0)), tilt)
+        TB.add(sdf.box(ctr, (0.05 * H, 0.0035 * H, 0.115 * H), axes=ax, round_=0.002 * H))
+        TB.add(sdf.box(ctr + V3(0, sgn * 0.003 * H, -0.105 * H), (0.052 * H, 0.0045 * H, 0.007 * H), axes=ax, round_=0.002 * H), role="Gold")
+        if sgn < 0:
+            TB.add(sdf.box(ctr + V3(0, -0.004 * H, 0.02 * H), (0.008 * H, 0.003 * H, 0.06 * H), axes=ax), role="Primary")
+            TB.add(sdf.box(ctr + V3(0, -0.004 * H, 0.045 * H), (0.03 * H, 0.003 * H, 0.008 * H), axes=ax), role="Primary")
+    parts.append((A.make(TB, "Tabard", faces=1200), ("fn", skirt_weights(J, zt, zt - 0.23 * H, follow=0.7))))
+    CP = sdf.Field("Primary", h=0.0035 * H)
+    CP.add(G.cape((0, 0.025 * H), 0.8 * H, 0.2 * H, (0.13 * H, 0.09 * H), (0.22 * H, 0.2 * H), 1.15, folds=9, fold_amp=0.09, thick=0.0045 * H))
+    parts.append((A.make(CP, "Cape", faces=2600), ("fn", height_weights([("Chest", 0.76 * H), ("Spine", 0.62 * H), ("Hips", 0.45 * H)]))))
+    pauldrons(parts, J, H, "Metal", "Gold", layers=3)
+    plate_limbs(parts, J, H, arms, legs)
     outline = [(-0.13, 0.12), (0.13, 0.12), (0.125, -0.05), (0.07, -0.18), (0.0, -0.26), (-0.07, -0.18), (-0.125, -0.05)]
-    base = J["elbowL"] + Vector((0.075, -0.06, -0.05))
-    parts.append(bind(prism("Shield", outline, 0.03, "Primary", bevel=0.01, loc=base, rot=(0, 0, 90)), rig, "LowerArmL"))
-    parts.append(bind(prism("ShieldCrossV", [(-0.015, 0.09), (0.015, 0.09), (0.015, -0.2), (-0.015, -0.2)], 0.036, "Gold", bevel=0.004, loc=base, rot=(0, 0, 90)), rig, "LowerArmL"))
-    parts.append(bind(prism("ShieldCrossH", [(-0.09, 0.03), (0.09, 0.03), (0.09, 0.0), (-0.09, 0.0)], 0.036, "Gold", bevel=0.004, loc=base, rot=(0, 0, 90)), rig, "LowerArmL"))
-    sword(rig, parts, J, "R", length=0.58)
-    finish_character("human", rig, parts, "biped", weight=0.9)
+    el, wr = J["elbowL"], J["wristL"]
+    base = A.lerp(el, wr, 0.45) + V3(0.06, -0.02, 0.0)
+    for o in (prism("Shield", outline, 0.03, "Primary", bevel=0.01, loc=base, rot=(0, 0, 90)),
+              prism("ShieldRim", [(x * 1.06, z * 1.05 + 0.004) for x, z in outline], 0.022, "Gold", bevel=0.006, loc=base + V3(-0.003, 0, 0), rot=(0, 0, 90)),
+              prism("ShieldCrossV", [(-0.015, 0.09), (0.015, 0.09), (0.015, -0.2), (-0.015, -0.2)], 0.036, "Gold", bevel=0.004, loc=base, rot=(0, 0, 90)),
+              prism("ShieldCrossH", [(-0.09, 0.03), (0.09, 0.03), (0.09, 0.0), (-0.09, 0.0)], 0.036, "Gold", bevel=0.004, loc=base, rot=(0, 0, 90))):
+        parts.append((o, ("rigid", "LowerArmL")))
+    parts += sculpt_sword(J, "R", length=0.6)
+    finish_sculpted("human", rig, body, parts, "biped", weight=0.9, spread=16)
 
 
 def ghoul():
-    J = humanoid_joints(h=0.95, shoulder=0.14, hip=0.075, hunch=0.07)
-    head_r = 0.12
-    head_c = J["headBase"] + Vector((0, -0.05, head_r * 0.85))
-    rig = humanoid_rig(J, head_c + Vector((0, 0, head_r)))
-    parts = [bind(humanoid_body(J, "Primary", gaunt=True, subsurf=1), rig, BODY_BONES)]
-    for side in "LR":
-        for p in hand(J, side, "Primary", scale=1.25, claws="Horn"):
-            parts.append(bind(p, rig, "Hand" + side))
-    skull = blob("Head", head_r, head_c, "Primary", scale=(0.9, 1.05, 1.0), subdiv=3, lumps=0.06, seed=2)
-    parts.append(bind(skull, rig, "Head"))
-    parts.append(bind(blob("Jaw", head_r * 0.6, head_c + Vector((0, -0.06, -0.085)), "Secondary", scale=(1.0, 0.9, 0.55), subdiv=2), rig, "Head"))
-    for k in range(6):
-        x = (k - 2.5) * 0.016
-        parts.append(bind(tube("Tooth", [head_c + Vector((x, -0.105, -0.06)), head_c + Vector((x, -0.11, -0.085))], [0.006, 0.0], "Teeth", segs=4), rig, "Head"))
-    for s in (1, -1):
-        parts.append(bind(blob("Socket", 0.03, head_c + Vector((s * 0.045, -0.095, 0.012)), "Dark", subdiv=2), rig, "Head"))
-        parts.append(bind(blob("Eye", 0.016, head_c + Vector((s * 0.045, -0.115, 0.012)), "Eye", subdiv=2), rig, "Head"))
-    for k in range(5):   # ribs
-        z = J["chest"].z + 0.01 - k * 0.035
+    """An emaciated ghoul: gaunt hunched body with exposed ribs and spine, skull face with sunken
+    glowing eyes, long talons, stringy hair and tattered rags."""
+    H = 1.22
+    J = A.joints(H, female=False, spread=20, hunch=0.06, bulk=0.9)
+    r = 0.075 * H
+    hc = head_center(J, r) + V3(0, -0.03 * H, -0.01 * H)
+    rig = sculpted_rig(J, hc + V3(0, 0, r * 1.1))
+    parts = []
+    BF = A.body_field(J, "Primary", gaunt=True, bulk=0.9)
+    for k in range(5):
+        z = J["chest"].z + 0.035 * H - k * 0.024 * H
         for s in (1, -1):
-            pts = [Vector((s * 0.008, -0.062, z)), Vector((s * 0.058, -0.048, z - 0.01)), Vector((s * 0.075, 0.0, z - 0.02))]
-            parts.append(bind(tube("Rib", [p + Vector((0, J["chest"].y, 0)) for p in pts], [0.008, 0.009, 0.006], "Secondary", segs=6), rig, "Chest"))
-    for k in range(6):   # vertebrae ridge
-        p = J["hips"].lerp(J["neck"], k / 5) + Vector((0, 0.06, 0))
-        parts.append(bind(blob("Vertebra", 0.016, p, "Secondary", subdiv=1), rig, "Spine" if k < 3 else "Chest"))
-    rags = lathe("Rags", [(0.085, J["hips"].z + 0.02), (0.1, J["hips"].z - 0.1), (0.11, J["hips"].z - 0.2)], "Secondary", segs=20,
-                 wave=lambda t, i: 1.0 + 0.12 * math.sin(t * 7) * (i / 2))
-    for v in rags.data.vertices:   # tattered hem
-        if v.co.z < J["hips"].z - 0.15:
-            v.co.z += 0.05 * abs(math.sin(v.co.x * 60 + v.co.y * 40))
-    parts.append(bind(rags, rig, "Hips"))
-    finish_character("humanoid", rig, parts, "biped", weight=0.8, hunch=1.0, claws=True)
+            pts = []
+            for x in (0.008, 0.026, 0.042):
+                y = G.surface_y(BF, s * x * H, z - x * 0.25 * H, -0.002 * H)
+                if y is not None:
+                    pts.append(V3(s * x * H, y, z - x * 0.25 * H))
+            if len(pts) >= 2:
+                BF.chain(pts, [0.0055 * H, 0.0065 * H, 0.005 * H][:len(pts)], k=0.006 * H, role="Bone")
+    for k in range(7):
+        z = J["hips"].z + 0.02 * H + k * 0.04 * H
+        y = G.surface_y(BF, 0, z, -0.003 * H, front=False)
+        if y is not None:
+            BF.sphere(V3(0, y, z), 0.009 * H, k=0.006 * H, role="Bone")
+    body = A.make(BF, "Body", faces=7000)
+    HF = A.head_field(hc, r, "Primary", ears=0.35, jaw=0.82, nose=0, chin=1.05)
+    for s in (1, -1):
+        HF.sphere(hc + V3(s * 0.34 * r, -0.86 * r, -0.05 * r), 0.2 * r, op="subtract", k=0.06 * r)
+        HF.ellipsoid(hc + V3(s * 0.55 * r, -0.62 * r, -0.32 * r), (0.16 * r, 0.1 * r, 0.09 * r), k=0.08 * r, role="Bone")
+    HF.add(sdf.box(hc + V3(0, -0.9 * r, -0.62 * r), (0.32 * r, 0.2 * r, 0.035 * r)), op="subtract", k=0.02 * r)
+    HF.cone(hc + V3(0, -0.92 * r, -0.28 * r), hc + V3(0, -0.92 * r, -0.4 * r), 0.06 * r, 0.03 * r, op="subtract")
+    HF.paint(lambda x, y, z: np.minimum(
+        np.sqrt((np.abs(x - hc.x) - 0.34 * r) ** 2 + (y - hc.y + 0.86 * r) ** 2 + (z - hc.z + 0.05 * r) ** 2) - 0.22 * r,
+        np.maximum(np.abs(z - hc.z + 0.62 * r) - 0.05 * r, np.abs(x - hc.x) - 0.3 * r) + 0.0 * y), "Dark")
+    head = A.make(HF, "Head", faces=3500)
+    parts.append((head, ("rigid", "Head")))
+    TE = sdf.Field("Teeth", h=0.0018 * H)
+    for i in range(7):
+        x = (i - 3) * 0.075 * r
+        yy = -0.93 * r + 0.06 * r * abs(i - 3) / 3
+        TE.cone(hc + V3(x, yy, -0.56 * r), hc + V3(x, yy - 0.01 * r, -0.66 * r), 0.03 * r, 0.004 * r)
+        TE.cone(hc + V3(x + 0.035 * r, yy + 0.01 * r, -0.69 * r), hc + V3(x + 0.035 * r, yy, -0.6 * r), 0.028 * r, 0.004 * r)
+    parts.append((A.make(TE, "Teeth", faces=900), ("rigid", "Head")))
+    for s in (1, -1):
+        parts.append((blob("Eye", 0.06 * r, hc + V3(s * 0.34 * r, -0.78 * r, -0.05 * r), "Eye", subdiv=2), ("rigid", "Head")))
+    HR = A.Hair(hc, r, "Hair", k=0.01 * r)
+    for i in range(7):
+        th = math.radians(-120 + 240 * i / 6)
+        HR.lock((math.sin(th) * 0.4, math.cos(th) * 0.4, 0.85), (math.sin(th) * 0.9, math.cos(th) * 0.9, -0.1),
+                V3(math.sin(th) * 0.02, 0.02, -0.16 * H * (0.7 + 0.3 * math.sin(i * 2.3))), 0.08, thick=0.6, n=4, lift=0.0)
+    parts.append((A.make(HR.F, "Hair", faces=1800), ("transfer", HAIR_BONES, [head])))
+    for side in "LR":
+        parts.append((A.make(A.hand(J, side, "Primary", scale=1.3, claws="Horn", fist=0.2), "Hand", faces=1500), ("rigid", "Hand" + side)))
+    zt = J["hips"].z + 0.025 * H
+
+    def tatter(a):
+        a = np.asarray(a)
+        return 0.33 * H + 0.04 * H * np.sin(a * 5 + 0.4) + 0.025 * H * np.sin(a * 13 + 1.1) + 0.015 * H * np.sin(a * 23)
+    RG = sdf.Field("Secondary", h=0.0032 * H)
+    RG.add(G.skirt((0, 0.0), zt, (0.07 * H, 0.054 * H), (0.12 * H, 0.105 * H), tatter, folds=7, fold_amp=0.12, thick=0.004 * H, ruffle=0.04, ruffle_freq=17))
+    RG.add(sdf.torus(V3(0, 0.002 * H, zt - 0.006 * H), 0.068 * H, 0.006 * H, axis=(0, 0.05, 1)), role="Leather")
+    parts.append((A.make(RG, "Rags", faces=2600), ("fn", skirt_weights(J, zt, 0.33 * H, follow=0.55))))
+    finish_sculpted("humanoid", rig, body, parts, "biped", weight=0.8, hunch=1.0, claws=True, spread=20)
 
 
 def merchant_imp():
-    J = humanoid_joints(h=0.62, shoulder=0.11, hip=0.06)
-    head_r = 0.15
-    head_c = J["headBase"] + Vector((0, -0.01, head_r * 0.9))
-    rig = humanoid_rig(J, head_c + Vector((0, 0, head_r)))
-    parts = [bind(humanoid_body(J, "Skin", bulk=1.15), rig, BODY_BONES)]
+    """The wandering imp merchant: pot-bellied, big-eared, in a hooded robe with a gold sash,
+    an overloaded backpack and a lantern."""
+    H = 0.66
+    J = A.joints(H, female=False, spread=20, bulk=1.25)
+    r = 0.105
+    hc = head_center(J, r, 0.45)
+    rig = sculpted_rig(J, hc + V3(0, 0, r * 1.1))
+    parts = []
+    BF = A.body_field(J, "Skin", bulk=1.25, belly=1.0)
+    tpts = A.tail(BF, V3(0, 0.06 * H, 0.5 * H), 0.4, 0.016, tip_role="Horn", heart=False)
+    rig.add("Tail1", tpts[0], tpts[3], "Hips")
+    rig.add("Tail2", tpts[3], tpts[6], "Tail1")
+    rig.add("Tail3", tpts[6], tpts[9], "Tail2")
+    body = A.make(BF, "Body", faces=6000)
+    torso = A.body_field(J, "Cloth", bulk=1.25, belly=1.0, arms=False, legs=False, h=0.004)
+    legs = A.body_field(J, "Leather", bulk=1.25, torso=False, arms=False, h=0.0032)
+    head = A.make(A.head_field(hc, r, "FaceImp", ears=1.5, jaw=1.12, chin=0.9, nose=1.4, ear_role="Skin"), "Head", faces=4000)
+    A.face_uv(head, hc, r)
+    parts.append((head, ("rigid", "Head")))
     for side in "LR":
-        for p in hand(J, side, "Skin", scale=0.9):
-            parts.append(bind(p, rig, "Hand" + side))
-    parts.append(bind(anime_head("Head", head_c, head_r, "FaceImp", chin=0.2, cheek=0.05), rig, "Head"))
-    for p in head_features(head_c, head_r, "Skin", ear_len=1.4):
-        parts.append(bind(p, rig, "Head"))
+        parts.append((A.make(A.hand(J, side, "Skin", scale=1.25, fist=0.3), "Hand", faces=1000), ("rigid", "Hand" + side)))
+    HF = sdf.Field("Horn", h=0.0024)
     for s in (1, -1):
-        parts.append(bind(curved_horn(head_c + Vector((s * head_r * 0.5, 0, head_r * 0.7)), s, 0.17, "Horn", curl=0.5, thickness=0.026), rig, "Head"))
-    hood = lathe("Hood", [(0.0, head_r * 1.22), (head_r * 0.8, head_r * 0.97), (head_r * 1.13, head_r * 0.2), (head_r * 1.1, -head_r * 0.35)], "Cloth", segs=22,
-                 center=head_c + Vector((0, 0.03, 0)))
-    for v in hood.data.vertices:
-        rel = v.co - head_c
-        if rel.y < -0.4 * head_r and rel.z < head_r * 0.7:
-            v.co = head_c + rel * Vector((1, 0.4, 1))
-    parts.append(bind(hood, rig, "Head"))
-    parts.append(bind(lathe("Coat", [(0.11, J["chest"].z + 0.03), (0.12, J["spine"].z), (0.15, J["hips"].z - 0.06), (0.17, J["hips"].z - 0.16)], "Cloth", segs=20,
-                            wave=lambda t, i: 1.0 + 0.05 * math.sin(t * 8) * (i / 3)), rig, ["Chest", "Spine", "Hips"]))
-    parts.append(bind(ring("Sash", J["hips"].z + 0.01, 0.13, "Gold", h=0.014, scale_y=0.85), rig, "Hips"))
-    parts.append(bind(blob("CoinPouch", 0.04, J["hipL"] + Vector((0.07, -0.04, 0.0)), "Leather", scale=(1, 1, 1.2), subdiv=2), rig, "Hips"))
-    pack = bevel_box("Backpack", (0.26, 0.18, 0.3), J["chest"] + Vector((0, 0.16, 0.0)), "Wood", bevel=0.02)
-    parts.append(bind(pack, rig, "Chest"))
-    for k in range(3):
-        parts.append(bind(bevel_box("PackBand", (0.28, 0.2, 0.025), J["chest"] + Vector((0, 0.16, -0.1 + k * 0.1)), "Gold", bevel=0.006), rig, "Chest"))
-    parts.append(bind(blob("Bedroll", 0.06, J["chest"] + Vector((0, 0.16, 0.2)), "Cloth", scale=(2.3, 1, 1), subdiv=2), rig, "Chest"))
-    parts.append(bind(lathe("Pot", [(0.0, 0.0), (0.05, 0.02), (0.06, 0.06), (0.04, 0.1), (0.045, 0.11), (0.0, 0.1)], "Stone", segs=12,
-                            center=J["chest"] + Vector((0.13, 0.17, -0.17))), rig, "Chest"))
-    parts.append(bind(tube("ScrollCase", [J["chest"] + Vector((-0.12, 0.2, -0.15)), J["chest"] + Vector((-0.12, 0.2, 0.18))], [0.025, 0.025], "Leather", segs=8), rig, "Chest"))
-    lantern = blob("Lantern", 0.04, J["handR"] + Vector((0, -0.02, -0.07)), "Fire", subdiv=2)
-    parts.append(bind(lantern, rig, "HandR"))
+        A.horn(HF, hc + V3(s * r * 0.5, 0.0, r * 0.75), s, 0.11, 0.018, curl=0.6, ridges=False)
+    parts.append((A.make(HF, "Horn", faces=900), ("rigid", "Head")))
+    HD = sdf.Field("Robe", h=0.003)
+    hcc = hc + V3(0, 0.06 * r, 0.05 * r)
+    HD.add(G.dome(hcc, (1.17 * r, 1.2 * r, 1.17 * r), 0.045 * r, cut=G.zrange(hc.z - 0.85 * r, 9)))
+    HD.ellipsoid(hc + V3(0, -1.05 * r, -0.25 * r), (0.78 * r, 0.55 * r, 0.82 * r), op="subtract", k=0.05 * r)
+    HD.cone(hcc + V3(0, 1.0 * r, 0.3 * r), hcc + V3(0, 1.55 * r, -0.4 * r), 0.3 * r, 0.03 * r, k=0.15 * r)
+    HD.add(sdf.torus(hc + V3(0, -0.2 * r, -0.05 * r), 0.98 * r, 0.05 * r, axis=(0, -1, 0.25)), role="Gold", k=0.01 * r)
+    parts.append((A.make(HD, "Hood", faces=2200), ("rigid", "Head")))
+    zr = J["waist"].z
+    RB = sdf.Field("Robe", h=0.0035)
+    RB.add(sdf.shell(torso, 0.008 * H, 0.004 * H, G.zrange(zr - 0.01 * H, 0.8 * H)))
+    RB.add(G.skirt((0, 0.0), zr + 0.004 * H, (0.135 * H, 0.12 * H), (0.17 * H, 0.155 * H), G.hem_front_back(0.25 * H, 0.22 * H), folds=8, fold_amp=0.08,
+                   thick=0.005 * H), k=0.006 * H)
+    RB.add(sdf.shell(torso, 0.016 * H, 0.006 * H, G.zrange(zr - 0.008 * H, zr + 0.02 * H)), role="Gold")
+    upper = height_weights([("Chest", 0.75 * H), ("Spine", 0.65 * H), ("Hips", 0.55 * H)])
+    lower = skirt_weights(J, zr, 0.22 * H, follow=0.5)
+    parts.append((A.make(RB, "Robe", faces=3200), ("fn", lambda P, bones: np.where((P[:, 2] > zr + 0.01 * H)[:, None], upper(P, bones), lower(P, bones)))))
+    BT = sdf.Field("Leather", h=0.003)
+    BT.add(sdf.slab(legs, 0.006 * H, G.zrange(-1.0, 0.1 * H)))
+    parts.append((A.make(BT, "Shoes", faces=1000), ("transfer", ["LowerLegL", "LowerLegR", "FootL", "FootR"])))
+    BK = sdf.Field("Wood", h=0.004)
+    yb = G.surface_y(torso, 0, J["chest"].z, 0.0, front=False)
+    pc = V3(0, yb + 0.1, J["chest"].z + 0.02)
+    BK.add(sdf.box(pc, (0.12, 0.075, 0.14), round_=0.02))
+    for k in (-1, 0, 1):
+        BK.add(sdf.box(pc + V3(0, 0, k * 0.085), (0.124, 0.079, 0.012), round_=0.006), role="Gold")
+    BK.cone(pc + V3(-0.14, 0.0, 0.17), pc + V3(0.14, 0.0, 0.17), 0.045, 0.045, role="Cloth")
+    BK.add(sdf.torus(pc + V3(0.0, 0.0, 0.17), 0.046, 0.006, axis=(1, 0, 0)), role="Leather")
+    BK.sphere(pc + V3(0.12, 0.03, -0.12), 0.05, role="Stone")
+    BK.cone(pc + V3(-0.12, 0.04, -0.15), pc + V3(-0.12, 0.04, 0.2), 0.022, 0.022, role="Leather")
+    for s in (1, -1):
+        BK.add(sdf.shell(torso, 0.012 * H, 0.004 * H, G.region_and(G.along(V3(s * 0.05 * H, 0, 0.45 * H), V3(s * 0.05 * H, 0, 0.82 * H), 0, 1),
+                                                                    lambda x, y, z, s=s: np.abs(x - s * 0.05 * H) - 0.012 * H)), role="Leather")
+    parts.append((A.make(BK, "Backpack", faces=2600), ("rigid", "Chest")))
+    hR = J["handR"]
+    LT = sdf.Field("Metal", h=0.0022)
+    lc = hR + V3(0, -0.02, -0.08)
     for k in range(4):
-        a = math.pi / 2 * k
-        bar = tube("LanternCage", [J["handR"] + Vector((math.cos(a) * 0.045, -0.02 + math.sin(a) * 0.045, -0.02)), J["handR"] + Vector((math.cos(a) * 0.045, -0.02 + math.sin(a) * 0.045, -0.12))],
-                   [0.005, 0.005], "Metal", segs=4)
-        parts.append(bind(bar, rig, "HandR"))
-    parts.append(bind(lathe("LanternCap", [(0.0, -0.005), (0.055, -0.02), (0.05, -0.03)], "Metal", segs=10, center=J["handR"] + Vector((0, -0.02, 0))), rig, "HandR"))
-    add_tail(rig, parts, J["hips"] + Vector((0, 0.08, -0.01)), "Skin", "Horn", 0.42)
-    finish_character("merchant", rig, parts, "biped", weight=0.7)
+        a = math.pi / 2 * k + math.pi / 4
+        LT.cone(lc + V3(math.cos(a) * 0.04, math.sin(a) * 0.04, 0.05), lc + V3(math.cos(a) * 0.04, math.sin(a) * 0.04, -0.05), 0.005, 0.005)
+    LT.cone(lc + V3(0, 0, 0.05), lc + V3(0, 0, 0.075), 0.048, 0.01, k=0.005)
+    LT.add(sdf.torus(lc + V3(0, 0, -0.05), 0.04, 0.007))
+    LT.add(sdf.torus(hR + V3(0, -0.02, 0.0), 0.016, 0.004, axis=(1, 0, 0)))
+    parts.append((A.make(LT, "Lantern", faces=1200), ("rigid", "HandR")))
+    parts.append((blob("Flame", 0.03, lc, "Fire", scale=(1, 1, 1.3), subdiv=2), ("rigid", "HandR")))
+    parts.append((blob("CoinPouch", 0.035, J["hipL"] + V3(0.05, -0.05, 0.0), "Leather", scale=(1, 1, 1.2), subdiv=2), ("rigid", "Hips")))
+    finish_sculpted("merchant", rig, body, parts, "biped", weight=0.7, spread=20)
 
 
 def beast():
+    """A hellhound: deep-chested, tucked waist, muscular haunches, spiked spine and mane,
+    a heavy muzzle with fangs, digitigrade legs with clawed paws, and a whip tail."""
     rig = Rig()
-    P = {"tail": Vector((0, 0.42, 0.56)), "hips": Vector((0, 0.3, 0.52)), "belly": Vector((0, 0.06, 0.48)), "chest": Vector((0, -0.2, 0.54)),
-         "neck": Vector((0, -0.36, 0.65)), "head": Vector((0, -0.48, 0.71)), "muzzle": Vector((0, -0.6, 0.67)), "snout": Vector((0, -0.7, 0.65))}
+    F = sdf.Field("Primary", h=0.0065)
+    F.ellipsoid(V3(0, -0.16, 0.5), (0.12, 0.2, 0.14))
+    F.ellipsoid(V3(0, -0.2, 0.43), (0.095, 0.13, 0.12), k=0.06)
+    F.ellipsoid(V3(0, 0.1, 0.52), (0.085, 0.17, 0.085), k=0.08)
+    for s in (1, -1):
+        F.ellipsoid(V3(s * 0.06, 0.3, 0.5), (0.072, 0.12, 0.11), k=0.05)
+        F.ellipsoid(V3(s * 0.08, -0.19, 0.5), (0.055, 0.09, 0.11), k=0.04)
+    F.cone(V3(0, -0.28, 0.56), V3(0, -0.45, 0.7), 0.11, 0.078, k=0.05)
+    F.ellipsoid(V3(0, -0.5, 0.73), (0.09, 0.1, 0.08), k=0.04)
+    F.cone(V3(0, -0.56, 0.715), V3(0, -0.71, 0.68), 0.062, 0.04, k=0.03)
+    F.cone(V3(0, -0.53, 0.66), V3(0, -0.68, 0.645), 0.05, 0.03, k=0.025)
+    for s in (1, -1):
+        F.ellipsoid(V3(s * 0.04, -0.56, 0.765), (0.03, 0.04, 0.016), k=0.02)
+        F.chain([V3(s * 0.045, -0.48, 0.77), V3(s * 0.07, -0.44, 0.84), V3(s * 0.085, -0.42, 0.9)], [0.03, 0.022, 0.003], k=0.012,
+                flat=(V3(0, 1, 0.3), 0.35), role="Secondary")
+    F.sphere(V3(0, -0.735, 0.69), 0.024, k=0.01, role="Dark")
     legs = {}
     for s, side in ((1, "L"), (-1, "R")):
-        legs["fs" + side] = Vector((s * 0.1, -0.2, 0.46)); legs["fm" + side] = Vector((s * 0.115, -0.17, 0.34))
-        legs["fe" + side] = Vector((s * 0.11, -0.19, 0.22)); legs["fp" + side] = Vector((s * 0.11, -0.24, 0.03))
-        legs["bh" + side] = Vector((s * 0.1, 0.3, 0.46)); legs["bt" + side] = Vector((s * 0.12, 0.36, 0.36))
-        legs["bk" + side] = Vector((s * 0.11, 0.4, 0.24)); legs["bp" + side] = Vector((s * 0.11, 0.3, 0.03))
-    nodes = [(P["hips"], (0.12, 0.13)), (P["tail"], 0.05), (P["belly"], (0.1, 0.11)), (P["chest"], (0.135, 0.15)), (P["neck"], 0.08),
-             (P["head"], (0.085, 0.095)), (P["muzzle"], (0.05, 0.055)), (P["snout"], (0.035, 0.04))]
-    edges = [(0, 1), (0, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7)]
-    for side in "LR":
-        b = len(nodes)
-        nodes += [(legs["fs" + side], 0.06), (legs["fm" + side], 0.05), (legs["fe" + side], 0.035), (legs["fp" + side], 0.036),
-                  (legs["bh" + side], 0.07), (legs["bt" + side], 0.06), (legs["bk" + side], 0.04), (legs["bp" + side], 0.036)]
-        edges += [(3, b), (b, b + 1), (b + 1, b + 2), (b + 2, b + 3), (0, b + 4), (b + 4, b + 5), (b + 5, b + 6), (b + 6, b + 7)]
-    rig.add("Hips", P["hips"], P["belly"])
-    rig.add("Spine", P["belly"], P["chest"], "Hips")
-    rig.add("Chest", P["chest"], P["neck"], "Spine")
-    rig.add("Head", P["neck"], P["snout"], "Chest")
-    for side in "LR":
-        rig.add("Leg" + side, legs["fs" + side], legs["fe" + side], "Chest")
-        rig.add("Shin" + side, legs["fe" + side], legs["fp" + side], "Leg" + side)
-        rig.add("Leg2" + side, legs["bh" + side], legs["bk" + side], "Hips")
-        rig.add("Shin2" + side, legs["bk" + side], legs["bp" + side], "Leg2" + side)
-    tail_pts = curve_pts(P["tail"], P["tail"] + Vector((0, 0.42, -0.08)), (0, 0, 0.12), 6)
-    rig.add("Tail1", tail_pts[0], tail_pts[3], "Hips")
-    rig.add("Tail2", tail_pts[3], tail_pts[5], "Tail1")
-    bones = ["Hips", "Spine", "Chest", "Head"] + [b + s for s in "LR" for b in ("Leg", "Shin", "Leg2", "Shin2")]
-    parts = [bind(skin("Body", nodes, edges, "Primary", subsurf=1), rig, bones)]
-    parts.append(bind(tube("Tail", tail_pts, [0.055, 0.06, 0.055, 0.045, 0.03, 0.0], "Secondary", segs=9), rig, ["Tail1", "Tail2"]))
+        fs, fe, fw, fp = V3(s * 0.09, -0.18, 0.5), V3(s * 0.1, -0.13, 0.32), V3(s * 0.1, -0.19, 0.12), V3(s * 0.1, -0.235, 0.03)
+        F.chain([fs, fe, A.lerp(fe, fw, 0.4), fw, fp], [0.068, 0.052, 0.042, 0.032, 0.03], k=0.03)
+        hp, st, hk, bp = V3(s * 0.075, 0.3, 0.48), V3(s * 0.1, 0.22, 0.31), V3(s * 0.1, 0.4, 0.15), V3(s * 0.1, 0.36, 0.03)
+        F.chain([hp, A.lerp(hp, st, 0.5) + V3(0, 0.02, 0), st, hk, bp], [0.085, 0.072, 0.05, 0.034, 0.03], k=0.03)
+        for paw in (fp, bp):
+            F.ellipsoid(paw + V3(0, -0.02, -0.005), (0.032, 0.042, 0.02), k=0.012, role="Secondary")
+            for k in (-1.5, -0.5, 0.5, 1.5):
+                t = paw + V3(k * 0.014, -0.055, -0.012)
+                F.cone(t, t + V3(k * 0.003, -0.022, -0.01), 0.007, 0.0015, k=0.004, role="Horn")
+        legs[side] = (fs, fe, fp, hp, st, bp)
+    tail = [V3(0, 0.42, 0.55), V3(0, 0.55, 0.62), V3(0, 0.68, 0.61), V3(0, 0.79, 0.53)]
+    F.chain(tail, [0.04, 0.03, 0.02, 0.012], k=0.03)
+    F.cone(tail[-1], tail[-1] + V3(0, 0.08, -0.06), 0.03, 0.002, k=0.02, role="Secondary", flat=(V3(1, 0, 0), 0.4))
+    for k in range(9):   # spine spikes
+        t = k / 8
+        base = V3(0, 0.36 - 0.6 * t, 0.6 + 0.06 * math.sin(t * math.pi) + 0.03 * t)
+        F.cone(base, base + V3(0, 0.05, 0.07 + 0.03 * math.sin(t * math.pi)), 0.016, 0.001, k=0.01, role="Horn")
     rnd = random.Random(4)
     for k in range(16):   # mane
         a = math.pi * (k / 15) - math.pi / 2
-        base = P["neck"] + Vector((math.sin(a) * 0.08, 0.02 + rnd.uniform(-0.03, 0.03), 0.04 + math.cos(a) * 0.05))
-        tip = base + Vector((math.sin(a) * 0.08, 0.1 + rnd.uniform(0, 0.06), 0.05))
-        parts.append(bind(tube("Mane", curve_pts(base, tip, (0, 0, 0.03), 4), [0.03, 0.025, 0.012, 0.0], "Secondary", segs=6, flat=0.5), rig, "Chest"))
-    for k in range(6):
-        t = k / 5
-        base = P["hips"].lerp(P["chest"], t) + Vector((0, 0, 0.11 + 0.02 * math.sin(t * math.pi)))
-        parts.append(bind(tube("Ridge", [base, base + Vector((0, 0.05, 0.07))], [0.022, 0.0], "Secondary", segs=6, flat=0.4, ref=(1, 0, 0)), rig, "Spine" if t < 0.6 else "Chest"))
-    parts.append(bind(blob("Jaw", 0.045, P["muzzle"] + Vector((0, 0.01, -0.045)), "Primary", scale=(1.0, 2.0, 0.5), subdiv=2), rig, "Head"))
-    parts.append(bind(blob("Nose", 0.02, P["snout"] + Vector((0, -0.035, 0.012)), "Dark", subdiv=2), rig, "Head"))
-    for s, side in ((1, "L"), (-1, "R")):
-        ear = curve_pts(P["head"] + Vector((s * 0.05, 0.03, 0.06)), P["head"] + Vector((s * 0.08, 0.07, 0.17)), (s * 0.01, 0, 0), 4)
-        parts.append(bind(tube("Ear", ear, [0.036, 0.03, 0.015, 0.0], "Secondary", segs=7, flat=0.45, ref=(0, 1, 0)), rig, "Head"))
-        parts.append(bind(blob("Eye", 0.018, P["head"] + Vector((s * 0.048, -0.075, 0.03)), "Eye", subdiv=2), rig, "Head"))
+        base = V3(math.sin(a) * 0.075, -0.33 + rnd.uniform(-0.03, 0.03), 0.62 + math.cos(a) * 0.05)
+        tip = base + V3(math.sin(a) * 0.06, 0.11 + rnd.uniform(0, 0.05), 0.05)
+        F.chain([base, (base + tip) / 2 + V3(0, 0, 0.025), tip], [0.034, 0.026, 0.003], k=0.012, role="Fur", flat=(V3(math.cos(a), 0, -math.sin(a)), 0.45))
+    rig.add("Hips", V3(0, 0.3, 0.5), V3(0, 0.06, 0.5))
+    rig.add("Spine", V3(0, 0.06, 0.5), V3(0, -0.2, 0.52), "Hips")
+    rig.add("Chest", V3(0, -0.2, 0.52), V3(0, -0.4, 0.64), "Spine")
+    rig.add("Head", V3(0, -0.42, 0.66), V3(0, -0.7, 0.68), "Chest")
+    for side in "LR":
+        fs, fe, fp, hp, st, bp = legs[side]
+        rig.add("Leg" + side, fs, fe, "Chest")
+        rig.add("Shin" + side, fe, fp, "Leg" + side)
+        rig.add("Leg2" + side, hp, st, "Hips")
+        rig.add("Shin2" + side, st, bp, "Leg2" + side)
+    rig.add("Tail1", tail[0], tail[2], "Hips")
+    rig.add("Tail2", tail[2], tail[3] + V3(0, 0.08, -0.06), "Tail1")
+    body = A.make(F, "Body", faces=9000)
+    parts = []
+    TF = sdf.Field("Teeth", h=0.002)
+    for s in (1, -1):
         for k in range(3):
-            x = s * (0.012 + k * 0.012)
-            parts.append(bind(tube("Fang", [P["muzzle"] + Vector((x, -0.05 + k * 0.02, -0.03)), P["muzzle"] + Vector((x, -0.05 + k * 0.02, -0.065 + k * 0.01))], [0.007, 0.0], "Teeth", segs=5), rig, "Head"))
-        for paw, bone in (("fp", "Shin"), ("bp", "Shin2")):
-            for k in (-1, 0, 1):
-                p = legs[paw + side] + Vector((k * 0.015, -0.03, -0.005))
-                parts.append(bind(tube("Claw", [p, p + Vector((0, -0.03, -0.012))], [0.007, 0.0], "Horn", segs=5), rig, bone + side))
-    finish_character("beast", rig, parts, "quadruped")
+            x = s * (0.014 + k * 0.011)
+            TF.cone(V3(x * 1.2, -0.7 + k * 0.025, 0.665), V3(x * 1.2, -0.7 + k * 0.025, 0.625 + k * 0.006), 0.008 - k * 0.0015, 0.0008)
+        parts.append((blob("Eye", 0.016, V3(s * 0.052, -0.575, 0.75), "Eye", scale=(1, 0.7, 0.8), subdiv=2), ("rigid", "Head")))
+    parts.append((A.make(TF, "Fangs", faces=500), ("rigid", "Head")))
+    finish_sculpted("beast", rig, body, parts, "quadruped", heat_skip=())
 
 
 def flyer():
+    """A giant bat: furry body, oversized ears, pug snout with fangs, membranous wings."""
     rig = Rig()
-    c = Vector((0, 0, 0.85))
-    rig.add("Body", c + Vector((0, 0.05, -0.12)), c + Vector((0, 0, 0.1)))
-    rig.add("Head", c + Vector((0, -0.03, 0.1)), c + Vector((0, -0.06, 0.28)), "Body")
-    parts = [bind(skin("Body", [(c + Vector((0, 0.03, -0.11)), 0.065), (c, (0.12, 0.11)), (c + Vector((0, -0.02, 0.1)), 0.08)], [(0, 1), (1, 2)], "Primary", subsurf=2), rig, ["Body", "Head"])]
-    hc = c + Vector((0, -0.04, 0.17))
-    parts.append(bind(blob("Head", 0.085, hc, "Primary", scale=(1.05, 1, 0.95), subdiv=3), rig, "Head"))
-    parts.append(bind(blob("Snout", 0.03, hc + Vector((0, -0.075, -0.02)), "Primary", scale=(1.2, 1, 0.8), subdiv=2), rig, "Head"))
-    rnd = random.Random(8)
-    for k in range(10):   # fur tuft
-        a = rnd.uniform(0, 2 * math.pi)
-        base = c + Vector((math.cos(a) * 0.08, 0.02 + math.sin(a) * 0.06, 0.08))
-        parts.append(bind(tube("Fur", [base, base + Vector((math.cos(a) * 0.04, 0.03, 0.05))], [0.02, 0.0], "Secondary", segs=5), rig, "Body"))
+    c = V3(0, 0, 0.85)
+    hc = c + V3(0, -0.04, 0.17)
+    F = sdf.Field("Primary", h=0.0045)
+    F.ellipsoid(c, (0.1, 0.09, 0.125))
+    F.ellipsoid(c + V3(0, -0.02, 0.07), (0.085, 0.075, 0.07), k=0.04)
+    F.sphere(hc, 0.078, k=0.04)
+    F.cone(hc + V3(0, -0.06, -0.02), hc + V3(0, -0.105, -0.035), 0.04, 0.028, k=0.02)
+    F.ellipsoid(hc + V3(0, -0.11, -0.022), (0.022, 0.01, 0.02), k=0.008, role="Dark")
+    for s in (1, -1):
+        F.chain([hc + V3(s * 0.04, 0.0, 0.05), hc + V3(s * 0.075, 0.01, 0.13), hc + V3(s * 0.085, 0.02, 0.21)], [0.04, 0.03, 0.004], k=0.02,
+                flat=(V3(0, 1, 0), 0.3), role="Secondary")
+        F.chain([c + V3(s * 0.04, 0, -0.1), c + V3(s * 0.05, -0.01, -0.17), c + V3(s * 0.05, -0.03, -0.2)], [0.018, 0.012, 0.006], k=0.02)
+    F.cone(c + V3(0, 0.06, -0.08), c + V3(0, 0.18, -0.25), 0.03, 0.004, k=0.02)
+    F.displace(lambda x, y, z: 0.004 * sdf.fbm(x, y, z, freq=60.0, octaves=2) * np.clip((z - (c.z + 0.12)) * -20 + 1, 0, 1))
+    body = A.make(F, "Body", faces=6000)
+    rig.add("Body", c + V3(0, 0.05, -0.12), c + V3(0, 0, 0.1))
+    rig.add("Head", c + V3(0, -0.03, 0.1), c + V3(0, -0.06, 0.28), "Body")
+    rig.add("Tail1", c + V3(0, 0.06, -0.08), c + V3(0, 0.18, -0.25), "Body")
+    parts = []
     for s, side in ((1, "L"), (-1, "R")):
-        ear = curve_pts(hc + Vector((s * 0.05, 0, 0.05)), hc + Vector((s * 0.1, 0.02, 0.2)), (s * 0.02, 0, 0), 4)
-        parts.append(bind(tube("Ear", ear, [0.04, 0.035, 0.018, 0.0], "Secondary", segs=7, flat=0.45, ref=(0, 1, 0)), rig, "Head"))
-        parts.append(bind(blob("Eye", 0.02, hc + Vector((s * 0.035, -0.075, 0.015)), "Eye", subdiv=2), rig, "Head"))
-        parts.append(bind(tube("Fang", [hc + Vector((s * 0.015, -0.095, -0.035)), hc + Vector((s * 0.015, -0.098, -0.06))], [0.006, 0.0], "Teeth", segs=4), rig, "Head"))
-        root = c + Vector((s * 0.08, 0.02, 0.04))
-        wparts, wrist, tip = bat_wing(root, s, 0.58, "Secondary", "Primary")
+        parts.append((blob("Eye", 0.017, hc + V3(s * 0.034, -0.07, 0.016), "Eye", subdiv=2), ("rigid", "Head")))
+        root = c + V3(s * 0.075, 0.02, 0.04)
+        WF, mem, wrist, tip = A.wing(root, s, 0.58, "Primary", "Secondary", bone_r=0.014)
         rig.add("Wing" + side, root, wrist, "Body")
         rig.add("WingTip" + side, wrist, tip, "Wing" + side)
-        for wp in wparts:
-            parts.append(bind(wp, rig, ["Wing" + side, "WingTip" + side]))
-        parts.append(bind(tube("Foot", [c + Vector((s * 0.04, 0, -0.1)), c + Vector((s * 0.05, -0.02, -0.2))], [0.015, 0.0], "Horn", segs=5), rig, "Body"))
-    rig.add("Tail1", c + Vector((0, 0.06, -0.08)), c + Vector((0, 0.18, -0.25)), "Body")
-    parts.append(bind(tube("Tail", [c + Vector((0, 0.06, -0.08)), c + Vector((0, 0.14, -0.18)), c + Vector((0, 0.2, -0.3))], [0.03, 0.02, 0.0], "Primary", segs=6), rig, "Tail1"))
-    finish_character("flyer", rig, parts, "flyer")
+        parts.append((A.make(WF, "WingBone", faces=900), ("bind", ["Wing" + side, "WingTip" + side])))
+        parts.append((mem, ("bind", ["Wing" + side, "WingTip" + side])))
+    TF = sdf.Field("Teeth", h=0.0015)
+    for s in (1, -1):
+        TF.cone(hc + V3(s * 0.016, -0.098, -0.045), hc + V3(s * 0.017, -0.1, -0.07), 0.006, 0.0008)
+    parts.append((A.make(TF, "Fangs", faces=300), ("rigid", "Head")))
+    finish_sculpted("flyer", rig, body, parts, "flyer")
 
 
 def insect():
+    """A giant cave spider: armored cephalothorax, banded abdomen with a glowing hourglass,
+    eight jointed legs with knobbed joints, chelicerae with fangs, and a cluster of eyes."""
     rig = Rig()
-    th = Vector((0, -0.05, 0.3))
-    ab = Vector((0, 0.3, 0.36))
-    hd = Vector((0, -0.25, 0.3))
-    rig.add("Body", th + Vector((0, 0.08, 0)), th + Vector((0, -0.1, 0)))
-    rig.add("Abdomen", th + Vector((0, 0.1, 0)), ab + Vector((0, 0.2, 0)), "Body")
-    rig.add("Head", th + Vector((0, -0.12, 0)), hd + Vector((0, -0.1, 0)), "Body")
-    parts = [bind(blob("Thorax", 0.15, th, "Primary", scale=(1.0, 1.1, 0.75), subdiv=3), rig, "Body")]
-    parts.append(bind(blob("Abdomen", 0.22, ab, "Secondary", scale=(0.95, 1.2, 0.85), subdiv=3, lumps=0.03), rig, "Abdomen"))
-    for k in range(3):
-        parts.append(bind(blob("Band", 0.05, ab + Vector((0, -0.08 + k * 0.1, 0.17)), "Primary", scale=(2.3, 0.45, 0.4), subdiv=2), rig, "Abdomen"))
-    parts.append(bind(blob("Marking", 0.04, ab + Vector((0, 0.12, 0.17)), "Glow", scale=(1.4, 1.6, 0.4), subdiv=2), rig, "Abdomen"))
-    parts.append(bind(blob("Head", 0.085, hd, "Primary", scale=(1.1, 1, 0.85), subdiv=3), rig, "Head"))
-    for s in (1, -1):
-        for (x, z, r) in ((0.028, 0.045, 0.016), (0.055, 0.025, 0.012), (0.02, 0.005, 0.011), (0.045, -0.005, 0.009)):
-            parts.append(bind(blob("Eye", r, hd + Vector((s * x, -0.075, z)), "Eye", subdiv=1), rig, "Head"))
-        fang = curve_pts(hd + Vector((s * 0.025, -0.07, -0.03)), hd + Vector((s * 0.012, -0.11, -0.1)), (s * 0.015, -0.01, 0), 4)
-        parts.append(bind(tube("Fang", fang, [0.016, 0.013, 0.008, 0.0], "Horn", segs=6), rig, "Head"))
-        palp = curve_pts(hd + Vector((s * 0.05, -0.06, -0.01)), hd + Vector((s * 0.09, -0.14, -0.06)), (s * 0.02, 0, 0.04), 4)
-        parts.append(bind(tube("Palp", palp, [0.012, 0.011, 0.009, 0.007], "Primary", segs=6), rig, "Head"))
-    for i, y in enumerate([-0.15, -0.06, 0.03, 0.12]):
+    th, ab, hd = V3(0, -0.05, 0.3), V3(0, 0.3, 0.38), V3(0, -0.22, 0.31)
+    F = sdf.Field("Primary", h=0.006)
+    F.ellipsoid(th, (0.13, 0.15, 0.085))
+    F.ellipsoid(hd, (0.085, 0.07, 0.065), k=0.04)
+    F.cone(th + V3(0, 0.12, 0.0), ab + V3(0, -0.2, -0.03), 0.04, 0.05, k=0.03)
+    F.ellipsoid(ab, (0.19, 0.24, 0.17), k=0.03, role="Secondary")
+    for k in range(4):
+        F.add(G.dome(ab + V3(0, -0.14 + k * 0.09, 0.0), (0.185 - abs(k - 1.5) * 0.02, 0.05, 0.168 - abs(k - 1.5) * 0.02), 0.006,
+                     cut=G.zrange(ab.z - 0.06, 9)), k=0.01, role="Primary")
+    F.paint(lambda x, y, z: np.maximum(np.abs(x) - (0.03 + 0.4 * np.abs(y - ab.y - 0.02) ** 1.2), np.maximum(np.abs(y - ab.y - 0.02) - 0.13, ab.z + 0.1 - z)), "Glow")
+    rig.add("Body", th + V3(0, 0.08, 0), th + V3(0, -0.1, 0))
+    rig.add("Abdomen", th + V3(0, 0.1, 0), ab + V3(0, 0.2, 0), "Body")
+    rig.add("Head", th + V3(0, -0.12, 0), hd + V3(0, -0.1, 0), "Body")
+    legs = []
+    for i, y in enumerate([-0.14, -0.06, 0.02, 0.1]):
         suffix = "" if i == 0 else str(i + 1)
         for s, side in ((1, "L"), (-1, "R")):
-            hip = th + Vector((s * 0.1, y, 0.02))
-            knee = hip + Vector((s * 0.17, (y + 0.02) * 0.6, 0.2))
-            ankle = knee + Vector((s * 0.12, (y + 0.02) * 0.6, -0.3))
-            foot = ankle + Vector((s * 0.04, (y + 0.02) * 0.3, -0.2))
+            hip = th + V3(s * 0.1, y, 0.0)
+            spread = (y + 0.02) * 0.9
+            knee = hip + V3(s * 0.17, spread, 0.2)
+            ankle = knee + V3(s * 0.13, spread, -0.28)
+            foot = ankle + V3(s * 0.05, spread * 0.3, -0.21)
+            F.chain([hip, A.lerp(hip, knee, 0.5), knee, A.lerp(knee, ankle, 0.5), ankle, foot], [0.03, 0.028, 0.024, 0.02, 0.016, 0.004], k=0.012)
+            F.sphere(knee, 0.03, k=0.01, role="Secondary")
+            F.sphere(ankle, 0.022, k=0.008, role="Secondary")
             rig.add("Leg" + suffix + side, hip, knee, "Body")
             rig.add("Shin" + suffix + side, knee, foot, "Leg" + suffix + side)
-            leg = tube("Leg", [hip, hip.lerp(knee, 0.5), knee, ankle, foot], [0.03, 0.026, 0.024, 0.016, 0.0], "Primary", segs=8)
-            parts.append(bind(leg, rig, ["Leg" + suffix + side, "Shin" + suffix + side]))
-            parts.append(bind(blob("Joint", 0.026, knee, "Secondary", subdiv=1), rig, "Leg" + suffix + side))
-            for k in range(3):   # bristles
-                pt = hip.lerp(knee, 0.3 + k * 0.25)
-                parts.append(bind(tube("Bristle", [pt, pt + Vector((0, 0.01, 0.03))], [0.004, 0.0], "Dark", segs=3), rig, "Leg" + suffix + side))
-    finish_character("insect", rig, parts, "spider")
+    for s in (1, -1):
+        F.chain([hd + V3(s * 0.025, -0.05, -0.02), hd + V3(s * 0.03, -0.09, -0.06), hd + V3(s * 0.02, -0.1, -0.1)], [0.022, 0.018, 0.012], k=0.012)
+        F.cone(hd + V3(s * 0.02, -0.1, -0.1), hd + V3(s * 0.005, -0.12, -0.14), 0.01, 0.001, k=0.004, role="Horn")
+        F.chain([hd + V3(s * 0.05, -0.05, -0.01), hd + V3(s * 0.09, -0.12, -0.03), hd + V3(s * 0.1, -0.16, -0.07)], [0.011, 0.01, 0.008], k=0.008)
+    body = A.make(F, "Body", faces=9000)
+    parts = []
+    for s in (1, -1):
+        for (x, z, rr) in ((0.026, 0.05, 0.017), (0.052, 0.033, 0.012), (0.018, 0.015, 0.011), (0.045, 0.006, 0.009)):
+            parts.append((blob("Eye", rr, hd + V3(s * x, -0.062, z), "Eye", subdiv=2), ("rigid", "Head")))
+    finish_sculpted("insect", rig, body, parts, "spider", heat_skip=())
 
 
 def golem():
-    J = humanoid_joints(h=1.15, shoulder=0.26, hip=0.13)
-    rig = humanoid_rig(J, J["headBase"] + Vector((0, 0, 0.2)))
+    """A rock golem: chiselled stone plates over a glowing core, with crystal growths."""
+    H = 1.35
+    J = A.joints(H, female=False, spread=22, bulk=1.5)
+    rig = sculpted_rig(J, J["headBase"] + V3(0, 0, 0.2))
+    core = A.make(A.body_field(J, "Glow", bulk=1.05, h=0.009 * H), "Core", faces=3000)
     parts = []
     rnd = random.Random(5)
 
-    def rock(name, bone, center, size, role="Primary"):
-        b = blob(name, 1.0, center, role, scale=size, subdiv=2, lumps=0.18, seed=rnd.uniform(0, 50), faceted=True)
-        parts.append(bind(b, rig, bone))
+    def rock(name, bone, center, size, role="Primary", faces=500):
+        RF = sdf.Field(role, h=min(size) * 0.12)
+        RF.add(sdf.box(center, V3(*size) * 0.95, round_=min(size) * 0.35))
+        seed = rnd.uniform(0, 50)
+        RF.displace(lambda x, y, z, sd=seed, sz=min(size): sz * 0.22 * sdf.fbm(x, y, z, freq=3.2 / sz, octaves=2, seed=sd))
+        parts.append((A.make(RF, name, faces=faces, faceted=True), ("rigid", bone)))
 
-    rock("Torso", "Chest", J["chest"] + Vector((0, 0, 0.02)), (0.25, 0.18, 0.21))
-    rock("Belly", "Spine", J["spine"], (0.19, 0.15, 0.14))
-    rock("Pelvis", "Hips", J["hips"], (0.2, 0.15, 0.11), "Secondary")
-    rock("Head", "Head", J["headBase"] + Vector((0, -0.03, 0.08)), (0.1, 0.1, 0.09))
-    rock("Brow", "Head", J["headBase"] + Vector((0, -0.08, 0.13)), (0.11, 0.05, 0.03), "Secondary")
+    rock("Torso", "Chest", J["chest"] + V3(0, 0, 0.02 * H), (0.17 * H, 0.12 * H, 0.13 * H), faces=900)
+    rock("Belly", "Spine", J["spine"] + V3(0, -0.01 * H, 0), (0.12 * H, 0.1 * H, 0.07 * H))
+    rock("Pelvis", "Hips", J["hips"], (0.13 * H, 0.1 * H, 0.07 * H), "Secondary")
+    rock("Head", "Head", J["headBase"] + V3(0, -0.02 * H, 0.06 * H), (0.065 * H, 0.065 * H, 0.06 * H), faces=400)
+    rock("Brow", "Head", J["headBase"] + V3(0, -0.07 * H, 0.1 * H), (0.075 * H, 0.03 * H, 0.02 * H), "Secondary", faces=200)
     for s, side in ((1, "L"), (-1, "R")):
-        rock("Shoulder", "UpperArm" + side, J["shoulder" + side] + Vector((s * 0.03, 0, 0.03)), (0.14, 0.13, 0.13), "Secondary")
-        rock("Arm", "UpperArm" + side, J["bicep" + side], (0.085, 0.085, 0.12))
-        rock("Forearm", "LowerArm" + side, J["forearm" + side], (0.1, 0.1, 0.13), "Secondary")
-        rock("Fist", "Hand" + side, J["hand" + side], (0.11, 0.11, 0.1))
-        rock("Thigh", "UpperLeg" + side, J["thigh" + side], (0.105, 0.105, 0.14), "Secondary")
-        rock("Shin", "LowerLeg" + side, J["calf" + side], (0.095, 0.095, 0.14))
-        rock("Foot", "Foot" + side, (J["ankle" + side] + J["toe" + side]) / 2, (0.085, 0.12, 0.05), "Secondary")
-        for k in range(2):   # crystals growing from the shoulders
-            base = J["shoulder" + side] + Vector((s * (0.05 + k * 0.05), 0.04, 0.1))
-            parts.append(bind(tube("Crystal", [base, base + Vector((s * 0.04, 0.03, 0.14 - k * 0.04))], [0.035, 0.0], "Glow", segs=5, smooth=False), rig, "UpperArm" + side))
-    for k in range(3):   # back crystals
-        base = J["chest"] + Vector(((k - 1) * 0.08, 0.15, 0.05))
-        parts.append(bind(tube("Crystal", [base, base + Vector(((k - 1) * 0.04, 0.08, 0.18))], [0.04, 0.0], "Glow", segs=5, smooth=False), rig, "Chest"))
-    for k in range(5):   # glowing cracks
-        p = J["chest"] + Vector((rnd.uniform(-0.13, 0.13), -0.175, rnd.uniform(-0.12, 0.09)))
-        parts.append(bind(tube("Crack", [p, p + Vector((rnd.uniform(-0.05, 0.05), -0.01, rnd.uniform(-0.08, 0.08)))], [0.012, 0.008], "Glow", segs=5), rig, "Chest"))
-    parts.append(bind(bevel_box("EyeSlit", (0.12, 0.02, 0.02), J["headBase"] + Vector((0, -0.125, 0.09)), "Eye", bevel=0.004), rig, "Head"))
-    finish_character("golem", rig, parts, "biped", weight=0.7, heavy=True)
+        rock("Shoulder", "UpperArm" + side, J["shoulder" + side] + V3(s * 0.025 * H, 0, 0.03 * H), (0.085 * H, 0.08 * H, 0.08 * H), "Secondary")
+        rock("Arm", "UpperArm" + side, A.lerp(J["shoulder" + side], J["elbow" + side], 0.6), (0.055 * H, 0.055 * H, 0.075 * H))
+        rock("Forearm", "LowerArm" + side, A.lerp(J["elbow" + side], J["wrist" + side], 0.5), (0.065 * H, 0.065 * H, 0.08 * H), "Secondary")
+        rock("Fist", "Hand" + side, J["hand" + side], (0.07 * H, 0.07 * H, 0.065 * H))
+        rock("Thigh", "UpperLeg" + side, A.lerp(J["hip" + side], J["knee" + side], 0.5), (0.07 * H, 0.07 * H, 0.09 * H), "Secondary")
+        rock("Shin", "LowerLeg" + side, A.lerp(J["knee" + side], J["ankle" + side], 0.5), (0.065 * H, 0.065 * H, 0.09 * H))
+        rock("Foot", "Foot" + side, A.lerp(J["ankle" + side], J["toe" + side], 0.5) + V3(0, 0, -0.01 * H), (0.055 * H, 0.08 * H, 0.03 * H), "Secondary")
+        CR = sdf.Field("Glow", h=0.004 * H)
+        for k in range(3):
+            b0 = J["shoulder" + side] + V3(s * (0.03 + k * 0.03) * H, 0.03 * H, 0.08 * H)
+            CR.cone(b0, b0 + V3(s * 0.03 * H, 0.02 * H, (0.11 - k * 0.025) * H), 0.022 * H, 0.002 * H)
+        parts.append((A.make(CR, "Crystal", faces=300, faceted=True), ("rigid", "UpperArm" + side)))
+    CR = sdf.Field("Glow", h=0.004 * H)
+    for k in range(3):
+        b0 = J["chest"] + V3((k - 1) * 0.06 * H, 0.1 * H, 0.05 * H)
+        CR.cone(b0, b0 + V3((k - 1) * 0.03 * H, 0.07 * H, 0.14 * H), 0.03 * H, 0.002 * H)
+    parts.append((A.make(CR, "Crystal", faces=300, faceted=True), ("rigid", "Chest")))
+    parts.append((bevel_box("EyeSlit", (0.07 * H, 0.012 * H, 0.012 * H), J["headBase"] + V3(0, -0.085 * H, 0.065 * H), "Eye", bevel=0.003), ("rigid", "Head")))
+    finish_sculpted("golem", rig, core, parts, "biped", weight=0.7, heavy=True, spread=22)
 
 
 def ooze():
+    """A gelatinous ooze: a wobbling mound pooling at the base, with drips, embedded bubbles
+    and two glowing eyes."""
     root = link(bpy.data.objects.new("Root", None))
-    body = blob("Body", 0.34, (0, 0, 0.0), "Primary", scale=(1.15, 1.1, 0.72), subdiv=4, lumps=0.07, seed=3)
-    for v in body.data.vertices:
-        if v.co.z < -0.08:
-            v.co.z = -0.08 + (v.co.z + 0.08) * 0.25
-    xform(body, (0, 0, 0.13))
+    F = sdf.Field("Primary", h=0.008)
+    F.ellipsoid(V3(0, 0, 0.17), (0.36, 0.33, 0.21))
+    F.ellipsoid(V3(0, 0, 0.04), (0.44, 0.41, 0.05), k=0.08)
+    F.ellipsoid(V3(0.05, 0.04, 0.3), (0.2, 0.18, 0.14), k=0.1)
+    for k in range(7):
+        a = 2 * math.pi * k / 7 + 0.3
+        F.sphere(V3(math.cos(a) * 0.38, math.sin(a) * 0.35, 0.06), 0.06, k=0.06)
+    for (x, y, z, rr) in ((0.18, 0.05, 0.3, 0.055), (-0.2, 0.1, 0.24, 0.045), (0.0, 0.2, 0.33, 0.04), (-0.1, -0.25, 0.2, 0.035)):
+        F.sphere(V3(x, y, z), rr, k=0.03, role="Secondary")
+    F.displace(lambda x, y, z: 0.012 * sdf.fbm(x, y, z, freq=6.0, octaves=2, seed=3.0))
+    body = A.make(F, "Body", faces=5000)
     body.parent = root
-    for (x, y, z, r) in ((0.1, 0.0, 0.18, 0.09), (-0.12, 0.08, 0.12, 0.06), (0.0, 0.12, 0.25, 0.05)):
-        b = blob("Core@Body", r, (x, y, z), "Secondary", subdiv=2)
-        b.parent = root
-    for k in range(5):   # drips
-        a = 2 * math.pi * k / 5
-        d = blob("Drip@Body", 0.05, (math.cos(a) * 0.34, math.sin(a) * 0.3, 0.06), "Primary", scale=(1, 1, 0.7), subdiv=2)
-        d.parent = root
     for s in (1, -1):
-        e = blob("Eye@Body", 0.045, (s * 0.1, -0.3, 0.22), "Eye", scale=(1, 0.7, 1.15), subdiv=2)
+        e = blob("Eye@Body", 0.045, (s * 0.1, -0.29, 0.25), "Eye", scale=(1, 0.7, 1.15), subdiv=2)
         e.parent = root
+        p = blob("Pupil@Body", 0.02, (s * 0.1, -0.325, 0.25), "Dark", scale=(0.6, 0.4, 1.2), subdiv=2)
+        p.parent = root
     front_marker(root)
     export(out("blob"))
-
 
 # =============================================================================================
 # Props
@@ -960,10 +1132,12 @@ def spikes():
 def rocks():
     r = prop_root()
     for k, (x, y, s) in enumerate([(-0.2, -0.1, 0.18), (0.18, 0.12, 0.14), (0.05, -0.25, 0.1), (-0.05, 0.25, 0.12), (0.25, -0.15, 0.08)]):
-        own(r, blob("Rock", s, (x, y, s * 0.4), "Stone", scale=(1, 0.9, 0.7), subdiv=1, lumps=0.25, seed=k * 3.1, faceted=True))
+        RF = sdf.Field("Stone", h=s * 0.1)
+        RF.add(sdf.box((x, y, s * 0.35), (s, s * 0.85, s * 0.6), round_=s * 0.35))
+        RF.displace(lambda px, py, pz, sd=k * 3.1, sz=s: sz * 0.3 * sdf.fbm(px, py, pz, freq=2.5 / sz, octaves=2, seed=sd))
+        own(r, A.make(RF, "Rock", faces=260, faceted=True))
     front_marker(r)
     export(out("rocks"))
-
 
 def artifact():
     r = prop_root()

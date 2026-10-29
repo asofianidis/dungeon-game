@@ -27,6 +27,7 @@ namespace Depthbound
             { "White", new Color(0.92f, 0.92f, 0.88f) }, { "Wing", new Color(0.3f, 0.05f, 0.12f) },
             { "Leather", new Color(0.2f, 0.12f, 0.08f) }, { "HairPrincess", new Color(0.24f, 0.07f, 0.3f) },
             { "Chain", new Color(0.4f, 0.41f, 0.45f) }, { "Lace", new Color(0.95f, 0.9f, 0.95f) }, { "Teeth", new Color(0.95f, 0.92f, 0.82f) },
+            { "Stocking", new Color(0.12f, 0.05f, 0.16f) }, { "Bone", new Color(0.86f, 0.82f, 0.7f) }, { "Fur", new Color(0.24f, 0.2f, 0.22f) }, { "Robe", new Color(0.1f, 0.3f, 0.28f) },
         };
 
         static readonly Dictionary<string, float> emissive = new Dictionary<string, float>
@@ -43,14 +44,16 @@ namespace Depthbound
             return dot > 0 ? n.Substring(0, dot) : n;
         }
 
-        /// <summary>Shared material for a role. Characters get cel shading, a rim light and an outline.</summary>
-        public static Material Get(string role, Color? overrideColor = null, bool character = false)
+        /// <summary>Shared material for a role. Characters get cel shading, a rim light and an outline.
+        /// vertexColor applies the ambient occlusion and tint baked into the Blender models.</summary>
+        public static Material Get(string role, Color? overrideColor = null, bool character = false, bool vertexColor = false)
         {
             bool face = role.StartsWith("Face");
             var color = face ? Color.white : overrideColor ?? (palette.TryGetValue(role, out var c) ? c : Color.magenta);
-            string key = role + "_" + ColorUtility.ToHtmlStringRGB(color) + (character ? "_c" : "");
+            string key = role + "_" + ColorUtility.ToHtmlStringRGB(color) + (character ? "_c" : "") + (vertexColor ? "_v" : "");
             if (materials.TryGetValue(key, out var m)) return m;
             m = new Material(LitShader) { name = key, color = color };
+            m.SetFloat("_VertexColor", vertexColor ? 1f : 0f);
             if (face) m.mainTexture = FaceFactory.Get(role.Substring(4));
             var detail = DetailFactory.ForRole(role);
             if (detail != null)
@@ -96,11 +99,12 @@ namespace Depthbound
             foreach (var r in go.GetComponentsInChildren<Renderer>(true))
             {
                 var mats = r.sharedMaterials;
+                bool baked = HasColors(r);
                 for (int i = 0; i < mats.Length; i++)
                 {
                     string role = mats[i] != null ? Role(mats[i].name) : "Primary";
                     Color? o = role == "Primary" ? primary : role == "Secondary" ? secondary : (role == "Skin" ? skin : null);
-                    mats[i] = Get(role, o, character);
+                    mats[i] = Get(role, o, character, baked);
                 }
                 r.sharedMaterials = mats;
                 r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
@@ -109,6 +113,18 @@ namespace Depthbound
             // Models are authored facing Blender's front; make sure they face +Z (forward) in Unity.
             if (FacesBackward(model, go.transform)) go.transform.localRotation = Quaternion.Euler(0, 180, 0);
             return go;
+        }
+
+        static bool HasColors(Renderer r)
+        {
+            Mesh mesh = null;
+            if (r is SkinnedMeshRenderer s) mesh = s.sharedMesh;
+            else
+            {
+                var mf = r.GetComponent<MeshFilter>();
+                if (mf != null) mesh = mf.sharedMesh;
+            }
+            return mesh != null && mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Color);
         }
 
         static bool FacesBackward(string model, Transform root)

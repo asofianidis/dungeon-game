@@ -9,7 +9,7 @@ namespace Depthbound
     /// </summary>
     public static class FaceFactory
     {
-        const int Size = 256;
+        const int Size = 512;
         static readonly Dictionary<string, Texture2D> cache = new Dictionary<string, Texture2D>();
 
         class Style
@@ -128,7 +128,7 @@ namespace Depthbound
             }
 
             // Mouth
-            float mv = 0.255f;
+            float mv = 0.205f;
             float mouth = s.smile ? Arc(u, v, 0.5f, mv - 0.004f, 5f, 0.465f, 0.535f, 0.0035f) : Arc(u, v, 0.5f, mv, -2f, 0.47f, 0.53f, 0.003f);
             c = Color.Lerp(c, s.mouth, Fill(mouth));
             if (s.fang)

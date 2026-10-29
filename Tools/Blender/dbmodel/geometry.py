@@ -13,10 +13,11 @@ PALETTE = {
     "Hair": (0.16, 0.06, 0.2, 1), "White": (0.92, 0.92, 0.88, 1), "Wing": (0.3, 0.05, 0.12, 1),
     "Leather": (0.2, 0.12, 0.08, 1), "FaceDemon": (0.62, 0.16, 0.16, 1), "FacePrincess": (0.96, 0.82, 0.86, 1),
     "FaceImp": (0.7, 0.18, 0.14, 1), "HairPrincess": (0.24, 0.07, 0.3, 1), "Chain": (0.4, 0.41, 0.45, 1),
-    "Lace": (0.95, 0.9, 0.95, 1), "Teeth": (0.95, 0.92, 0.82, 1),
+    "Lace": (0.95, 0.9, 0.95, 1), "Teeth": (0.95, 0.92, 0.82, 1), "Stocking": (0.12, 0.05, 0.16, 1),
+    "Bone": (0.86, 0.82, 0.7, 1), "Fur": (0.24, 0.2, 0.22, 1), "Robe": (0.1, 0.3, 0.28, 1),
 }
 # Roles whose surfaces get a cube-projected UV for the detail textures painted in Unity.
-DETAIL_ROLES = {"Primary", "Secondary", "Metal", "Gold", "Cloth", "Leather", "Wood", "Stone", "Chain", "Wing", "Dark", "White", "Horn"}
+DETAIL_ROLES = {"Robe", "Stocking", "Primary", "Secondary", "Metal", "Gold", "Cloth", "Leather", "Wood", "Stone", "Chain", "Wing", "Dark", "White", "Horn"}
 MATS = {}
 
 
@@ -112,32 +113,6 @@ def xform(ob, loc=(0, 0, 0), rot=(0, 0, 0), scale=(1, 1, 1)):
 # =============================================================================================
 # Shapes
 # =============================================================================================
-
-def skin(name, nodes, edges, role, subsurf=2):
-    """Organic mesh from a joint graph: nodes = [(pos, radius or (rx, ry)), ...]."""
-    me = bpy.data.meshes.new(name)
-    me.from_pydata([Vector(n[0]) for n in nodes], edges, [])
-    me.update()
-    bm = bmesh.new()
-    bm.from_mesh(me)
-    sk = bm.verts.layers.skin.verify()
-    bm.verts.ensure_lookup_table()
-    for i, v in enumerate(bm.verts):
-        r = nodes[i][1]
-        v[sk].radius = r if isinstance(r, tuple) else (r, r)
-        v[sk].use_root = i == 0
-    bm.to_mesh(me)
-    bm.free()
-    ob = link(bpy.data.objects.new(name, me))
-    m = ob.modifiers.new("Skin", "SKIN")
-    m.branch_smoothing = 0.75
-    m.use_smooth_shade = True
-    s = ob.modifiers.new("Sub", "SUBSURF")
-    s.levels = subsurf
-    s.render_levels = subsurf
-    apply_modifiers(ob)
-    return finalize(ob, role)
-
 
 def tube(name, pts, radii, role, segs=10, flat=1.0, ref=(0, 0, 1), smooth=True, twist=0.0):
     """Tapered tube through points. radius 0 = pointed tip. flat < 1 squashes it into a ribbon."""
@@ -271,48 +246,6 @@ def blob(name, radius, loc, role, scale=(1, 1, 1), subdiv=3, lumps=0.0, seed=0.0
     return xform(ob, loc)
 
 
-def membrane(name, points, role, thickness=0.012):
-    bm = bmesh.new()
-    vs = [bm.verts.new(p) for p in points]
-    bm.faces.new(vs)
-    ob = from_bm(name, bm, role, smooth=True)
-    s = ob.modifiers.new("Solid", "SOLIDIFY")
-    s.thickness = thickness
-    s.offset = 0
-    apply_modifiers(ob)
-    return finalize(ob, role)
-
-
-def anime_head(name, center, r, role, chin=0.32, cheek=0.0):
-    """A head with a soft anime jaw and a front-projected face UV (the face is painted in Unity)."""
-    bm = bmesh.new()
-    bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=22, radius=r)
-    for v in bm.verts:
-        x, y, z = v.co
-        if z < 0:
-            k = 1.0 + (z / r) * chin
-            v.co.x *= k
-            v.co.y *= 1.0 + (z / r) * chin * 0.5
-        if y < 0 and -0.6 * r < z < 0.1 * r:
-            v.co.x *= 1.0 + cheek          # fuller cheeks
-        v.co.x *= 1.02
-        v.co.z *= 1.06
-        if y < 0:
-            v.co.y *= 0.9
-        if y > 0 and z > -0.2 * r:
-            v.co.y *= 1.06                  # rounder back of the skull
-    uv = bm.loops.layers.uv.new("UVMap")
-    for f in bm.faces:
-        for loop in f.loops:
-            co = loop.vert.co
-            if co.y < -0.12 * r:
-                loop[uv].uv = (0.5 + co.x / (2.04 * r), 0.5 + co.z / (2.12 * r))
-            else:
-                loop[uv].uv = (0.03, 0.03)
-    ob = from_bm(name, bm, role)
-    return xform(ob, center)
-
-
 # =============================================================================================
 # Rigging and export
 # =============================================================================================
@@ -395,6 +328,10 @@ def front_marker(parent=None):
 
 
 def export(path, animated=False):
+    if not animated:   # props: bake AO across all their parts
+        from . import shade
+        bpy.context.view_layer.update()
+        shade.bake_ao_many([o for o in bpy.context.scene.objects if o.type == "MESH"], dist=0.25)
     bpy.ops.object.select_all(action="DESELECT")
     for o in bpy.context.scene.objects:
         o.select_set(True)
@@ -406,6 +343,7 @@ def export(path, animated=False):
         bake_anim=animated, bake_anim_use_all_actions=animated, bake_anim_use_nla_strips=False,
         bake_anim_use_all_bones=True, bake_anim_force_startend_keying=True, bake_anim_step=1.0,
         bake_anim_simplify_factor=0.0, armature_nodetype="NULL", path_mode="STRIP",
+        colors_type="LINEAR", prioritize_active_color=True,
     )
     print("exported", path)
     clear()

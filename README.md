@@ -18,11 +18,13 @@ Dungeons are generated in code. Characters and props are anime-style models buil
 - Each floor is a single generated mesh: textured walls and floors, emissive lava, and fog of war in the vertex colors.
 - An angled perspective camera with moonlight shadows, a torch light that follows you, and flickering braziers and portals.
 - **Universal Render Pipeline** with custom HLSL shaders. Characters get anime cel shading, a rim light and ink outlines. Faces are painted procedurally (glossy irises, lashes, brows, blush) onto UV-mapped heads.
-- **Modeled, not assembled.** Bodies are sculpted with Blender's Skin modifier over a joint graph with muscle nodes (biceps, forearms, thighs, calves), then subdivided. Hands have fingers and thumbs, and heads have noses and pointed demonic ears. Layered hair uses S-curved clumps and ribbon strands. Clothing is layered: corset lacing, an open overskirt over frilled petticoats, ruffled collars, folded capes, chainmail, multi-plate armor with gold trim.
+- **Sculpted, not assembled.** Every character and creature is sculpted as a signed distance field and meshed in Blender, so each body is one seamless surface: pelvis, rib cage, bust or pecs, deltoids, tapered limbs with muscle bulges, knees, feet, and hands with jointed fingers. Heads have a V-shaped anime jaw, and hair is a sculpted mass with a jagged fringe and flowing locks.
+- **Clothing shaped from the body.** Bodices, plate armor, greaves, stockings and boots are shells of the body's own field, so they fit the figure. Skirts flare with folds and ruffled hems; capes, sleeves, pauldrons, helms and trims are layered on top.
+- **Baked shading.** Ambient occlusion and tint gradients are baked per vertex and multiplied in by the shader, so creases, armor overlaps and hair shadow the surface under them.
 - **Painted surface detail.** Cube-projected UVs carry procedural detail textures in Unity: cloth weave, brushed metal, chain mail, leather and wood grain, wing veins, stone.
-- **Keyframed animation.** Every character has a skinned armature and Blender-authored clips (Idle, Walk, Attack, Cast, Hit, Death) with anticipation, follow-through and easing. Unity crossfades the loops, layers one-shots over them, times monster swings to their wind-ups, and plays death poses before bodies sink away.
+- **Keyframed animation.** Every character has a skinned armature (bone-heat weights for bodies, weights copied from the body for clothing) and Blender-authored clips (Idle, Walk, Attack, Cast, Hit, Death) with anticipation, follow-through and easing. Unity crossfades the loops, layers one-shots over them, times monster swings to their wind-ups, and plays death poses before bodies sink away.
 - **Live dialogue portraits.** An off-screen portrait studio renders the speaking character, animated, into the dialogue box.
-- Models: the Archdemon, Princess Lysandra, crusader knight, undead ghoul, wolf-beast, bat, spider, rock golem, ooze, imp quartermaster, plus every prop (throne, gate, pillars, braziers, chests, shrine, fountain, relic, ...).
+- Models: the Archdemon, Princess Lysandra, templar knight, undead ghoul, hellhound, giant bat, cave spider, rock golem, ooze, imp quartermaster, plus every prop (throne, gate, pillars, braziers, chests, shrine, fountain, relic, ...).
 
 ## Real-time combat
 
@@ -104,9 +106,14 @@ Assets/
     BalanceBot.cs     Real-time autoplay bot that reports how deep each class gets in an hour of play
 Tools/Blender/
   build_models.py    Models, rigs and animates every character and prop, exporting FBX (pass names to rebuild a subset)
-  dbmodel/geometry.py  Modeling, UV, rigging and export helpers
+  dbmodel/sdf.py       Signed-distance-field sculpting: primitives, smooth unions, surface-nets meshing, gradient normals
+  dbmodel/anatomy.py   Sculpted bodies, heads, hands, hair, horns, tails and wings
+  dbmodel/garments.py  Clothing and armor as shells of the body: bodices, plates, skirts, capes, sleeves, domes
+  dbmodel/shade.py     Baked vertex AO and tints, bone-heat weights, weight transfer to clothing
+  dbmodel/geometry.py  Hard-surface modeling, UV, rigging and export helpers
   dbmodel/anim.py      Keyframed clip authoring for biped, quadruped, spider and flyer rigs
-  preview_models.py  Renders a lineup PNG of exported models (yaw=40 for a three-quarter view, pose=Walk:5 for a clip frame)
+  preview_models.py  Renders a lineup PNG of exported models (yaw=40 for a three-quarter view, pose=Walk:5 for a clip frame,
+                     color=VERTEX to see the baked AO, px=600 / zoom=3 focus=1.05 for close-ups)
 ```
 
 ## Running
@@ -126,7 +133,7 @@ Unity.exe -batchmode -nographics -projectPath . -executeMethod Depthbound.Editor
 # Windows build -> Builds/Windows/Depthbound.exe
 Unity.exe -batchmode -nographics -projectPath . -executeMethod Depthbound.EditorTools.ProjectSetup.BuildWindows -logFile build.log
 
-# Rebuild the 3D models with Blender 5.x (writes Assets/Resources/Models/*.fbx)
+# Rebuild the 3D models with Blender 5.x (writes Assets/Resources/Models/*.fbx; about 2 minutes)
 blender -b --factory-startup --python Tools/Blender/build_models.py -- Assets/Resources/Models
 
 # Scripted screenshots from a built player (uses a throwaway save)

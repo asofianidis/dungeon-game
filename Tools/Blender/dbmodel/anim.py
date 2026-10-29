@@ -115,13 +115,14 @@ def wings_tail(p, t, clip, flap=1.0, fold=0.0):
 # Bipeds: Archdemon, princess, crusader, ghoul, imp, golem
 # =============================================================================================
 
-def biped(clip, t, weight=1.0, hunch=0.0, grace=0.0, claws=False, heavy=False):
-    """weight: motion amplitude; grace: princess-style poise; claws: two-handed swipes; heavy: golem."""
+def biped(clip, t, weight=1.0, hunch=0.0, grace=0.0, claws=False, heavy=False, spread=0.0):
+    """weight: motion amplitude; grace: princess-style poise; claws: two-handed swipes; heavy: golem;
+    spread: how far (degrees) the rest pose already holds the arms away from the body."""
     p = Pose()
     tau = 2 * math.pi
     breathe = math.sin(tau * t * (1 if clip == "Idle" else 2))
     a = weight
-    hang = 9 + 4 * grace
+    hang = 9 + 4 * grace - spread
 
     # Arms rest slightly away from the body.
     p.r("UpperArmL", Y, -hang)

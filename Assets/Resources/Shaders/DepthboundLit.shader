@@ -1,6 +1,7 @@
 // URP shader for characters and props. Characters use cel shading (_Toon), a rim light, and an
 // inverted-hull outline (_OutlineWidth, in pixels). _Tint/_Flash are set per renderer via
-// MaterialPropertyBlock for fog-of-war dimming, hit flashes and wind-up glow.
+// MaterialPropertyBlock for fog-of-war dimming, hit flashes and wind-up glow. _VertexColor blends
+// in the per-vertex color baked by the Blender pipeline (ambient occlusion times tint gradients).
 Shader "Depthbound/Lit"
 {
     Properties
@@ -9,6 +10,7 @@ Shader "Depthbound/Lit"
         _MainTex ("Texture", 2D) = "white" {}
         _DetailTex ("Detail (0.5 = neutral)", 2D) = "gray" {}
         _DetailStrength ("Detail Strength", Range(0, 1)) = 0
+        _VertexColor ("Vertex Color (baked AO)", Range(0, 1)) = 0
         _Emission ("Emission", Color) = (0,0,0,0)
         _Toon ("Toon", Range(0, 1)) = 0
         _RimColor ("Rim Color", Color) = (0,0,0,0)
@@ -30,6 +32,7 @@ Shader "Depthbound/Lit"
         float4 _MainTex_ST;
         float4 _DetailTex_ST;
         half _DetailStrength;
+        half _VertexColor;
         half4 _Color;
         half4 _Emission;
         half _Toon;
@@ -45,6 +48,7 @@ Shader "Depthbound/Lit"
         float4 positionOS : POSITION;
         float3 normalOS : NORMAL;
         float2 uv : TEXCOORD0;
+        half4 color : COLOR;
     };
     ENDHLSL
 
@@ -73,6 +77,7 @@ Shader "Depthbound/Lit"
                 float3 positionWS : TEXCOORD1;
                 half3 normalWS : TEXCOORD2;
                 float2 detailUV : TEXCOORD3;
+                half3 color : TEXCOORD4;
             };
 
             Varyings vert(Attributes v)
@@ -83,6 +88,7 @@ Shader "Depthbound/Lit"
                 o.normalWS = TransformObjectToWorldNormal(v.normalOS);
                 o.uv = TRANSFORM_TEX(v.uv, _MainTex);
                 o.detailUV = TRANSFORM_TEX(v.uv, _DetailTex);
+                o.color = lerp(half3(1, 1, 1), v.color.rgb, _VertexColor);
                 return o;
             }
 
@@ -91,6 +97,7 @@ Shader "Depthbound/Lit"
                 half4 c = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv) * _Color;
                 half detail = SAMPLE_TEXTURE2D(_DetailTex, sampler_DetailTex, i.detailUV).r * 2.0;
                 c.rgb *= lerp(1.0, detail, _DetailStrength);
+                c.rgb *= i.color;
                 half3 albedo = c.rgb * _Tint.rgb;
                 half3 n = normalize(i.normalWS);
                 half3 color = DepthboundLighting(i.positionWS, n, i.positionCS, albedo, _Toon);

@@ -49,3 +49,6 @@ crashlytics-build.properties
 # OS
 .DS_Store
 Thumbs.db
+
+# Python bytecode from the Blender tools
+__pycache__/

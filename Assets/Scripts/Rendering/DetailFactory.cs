@@ -17,7 +17,7 @@ namespace Depthbound
         {
             switch (role)
             {
-                case "Cloth": case "Lace": case "White": return ("weave", 0.32f);
+                case "Cloth": case "Lace": case "White": case "Robe": case "Stocking": return ("weave", 0.32f);
                 case "Metal": return ("metal", 0.4f);
                 case "Gold": return ("metal", 0.28f);
                 case "Chain": return ("chain", 0.55f);

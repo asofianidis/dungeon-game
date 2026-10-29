@@ -13,7 +13,27 @@ args = sys.argv[sys.argv.index("--") + 1:]
 src, out, names = args[0], args[1], args[2:]
 yaw = 0.0
 pose = None
+color = "MATERIAL"
+scale = 1.4
+px = 220
+focus = None
 for n in list(names):
+    if n.startswith("color="):
+        color = n[6:]
+        names.remove(n)
+        continue
+    if n.startswith("px="):
+        px = int(n[3:])
+        names.remove(n)
+        continue
+    if n.startswith("focus="):
+        focus = float(n[6:])
+        names.remove(n)
+        continue
+    if n.startswith("zoom="):
+        scale = 1.4 / float(n[5:])
+        names.remove(n)
+        continue
     if n.startswith("yaw="):
         yaw = float(n[4:])
         names.remove(n)
@@ -56,19 +76,21 @@ if pose:
     print("actions:", [a.name for a in bpy.data.actions][:12])
 scene.render.engine = "BLENDER_WORKBENCH"
 scene.display.shading.light = "STUDIO"
-scene.display.shading.color_type = "MATERIAL"
-scene.render.resolution_x = 220 * max(1, len(names))
-scene.render.resolution_y = 420
+scene.display.shading.color_type = color
+scene.display.shading.show_cavity = True
+scene.display.shading.show_shadows = True
+scene.render.resolution_x = px * max(1, len(names))
+scene.render.resolution_y = int(px * 420 / 220)
 scene.render.filepath = out
 scene.world = bpy.data.worlds.new("w") if scene.world is None else scene.world
 
 cam_data = bpy.data.cameras.new("cam")
 cam_data.type = "ORTHO"
-cam_data.ortho_scale = 1.4 * max(1, len(names)) * 1.05
+cam_data.ortho_scale = scale * max(1, len(names)) * 1.05
 cam = bpy.data.objects.new("cam", cam_data)
 scene.collection.objects.link(cam)
 dist = 8.0
-cam.location = (math.sin(math.radians(yaw)) * dist, -math.cos(math.radians(yaw)) * dist, 2.6 if yaw else 2.2)
+cam.location = (math.sin(math.radians(yaw)) * dist, -math.cos(math.radians(yaw)) * dist, (2.6 if yaw else 2.2) + ((focus - 0.62) if focus is not None else 0.0))
 cam.rotation_euler = (math.radians(76 if yaw else 80), 0, math.radians(yaw))
 scene.camera = cam
 bpy.ops.render.render(write_still=True)

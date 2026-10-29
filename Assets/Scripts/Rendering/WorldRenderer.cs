@@ -817,9 +817,10 @@ namespace Depthbound
         void UpdateLights()
         {
             var p = world.player;
-            torch.transform.position = W3(p.pos, 2.2f);
-            torch.range = Mathf.Max(5f, p.Get(StatType.LightRadius) * 1.5f);
-            torch.intensity = 2.2f + 0.1f * Mathf.Sin(Time.time * 9f) * Mathf.PerlinNoise(Time.time * 2f, 0);
+            // Held well above the head so the hero is lit like the floor instead of saturating.
+            torch.transform.position = W3(p.pos, 3.4f);
+            torch.range = Mathf.Max(6f, p.Get(StatType.LightRadius) * 1.5f + 1.5f);
+            torch.intensity = 5.2f + 0.25f * Mathf.Sin(Time.time * 9f) * Mathf.PerlinNoise(Time.time * 2f, 0);
         }
 
         void UpdateHover()
