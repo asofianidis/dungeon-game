@@ -188,8 +188,9 @@ def archdemon():
     arms = A.body_field(J, "Primary", bulk=1.08, torso=False, legs=False, h=0.004 * H)
     legs = A.body_field(J, "Dark", bulk=1.08, torso=False, arms=False, h=0.004 * H)
 
-    head = A.make(A.head_field(hc, r, "FaceDemon", ears=1.0, jaw=1.12, nose=1.1, ear_role="Skin"), "Head", faces=4000)
+    head = A.make(A.head_field(hc, r, "FaceDemon", ears=1.0, jaw=1.1, nose=1.1, ear_role="Skin"), "Head", faces=9000)
     A.face_uv(head, hc, r)
+    A.face_normals(head, hc, r)
     parts.append((head, ("rigid", "Head")))
     for side in "LR":
         parts.append((A.make(A.hand(J, side, "Skin", scale=1.08, claws="Horn", fist=0.25), "Hand", faces=1500), ("rigid", "Hand" + side)))
@@ -315,8 +316,9 @@ def princess():
     torso = A.body_field(J, "Cloth", female=True, bust=1.1, arms=False, legs=False, h=0.004 * H)
     legs = A.body_field(J, "Dark", female=True, torso=False, arms=False, h=0.004 * H)
 
-    head = A.make(A.head_field(hc, r, "FacePrincess", ears=0.55, ear_role="SkinPale"), "Head", faces=4500)
+    head = A.make(A.head_field(hc, r, "FacePrincess", ears=0.55, ear_role="SkinPale"), "Head", faces=9000)
     A.face_uv(head, hc, r)
+    A.face_normals(head, hc, r)
     parts.append((head, ("rigid", "Head")))
     for side in "LR":
         parts.append((A.make(A.hand(J, side, "SkinPale", scale=1.0), "Hand", faces=1200), ("rigid", "Hand" + side)))
@@ -630,7 +632,7 @@ def ghoul():
     HF.paint(lambda x, y, z: np.minimum(
         np.sqrt((np.abs(x - hc.x) - 0.34 * r) ** 2 + (y - hc.y + 0.86 * r) ** 2 + (z - hc.z + 0.05 * r) ** 2) - 0.22 * r,
         np.maximum(np.abs(z - hc.z + 0.62 * r) - 0.05 * r, np.abs(x - hc.x) - 0.3 * r) + 0.0 * y), "Dark")
-    head = A.make(HF, "Head", faces=3500)
+    head = A.make(HF, "Head", faces=6000)
     parts.append((head, ("rigid", "Head")))
     TE = sdf.Field("Teeth", h=0.0018 * H)
     for i in range(7):
@@ -678,8 +680,9 @@ def merchant_imp():
     body = A.make(BF, "Body", faces=6000)
     torso = A.body_field(J, "Cloth", bulk=1.25, belly=1.0, arms=False, legs=False, h=0.004)
     legs = A.body_field(J, "Leather", bulk=1.25, torso=False, arms=False, h=0.0032)
-    head = A.make(A.head_field(hc, r, "FaceImp", ears=1.5, jaw=1.12, chin=0.9, nose=1.4, ear_role="Skin"), "Head", faces=4000)
+    head = A.make(A.head_field(hc, r, "FaceImp", ears=1.5, jaw=1.12, chin=0.9, nose=1.4, ear_role="Skin"), "Head", faces=8000)
     A.face_uv(head, hc, r)
+    A.face_normals(head, hc, r)
     parts.append((head, ("rigid", "Head")))
     for side in "LR":
         parts.append((A.make(A.hand(J, side, "Skin", scale=1.25, fist=0.3), "Hand", faces=1000), ("rigid", "Hand" + side)))

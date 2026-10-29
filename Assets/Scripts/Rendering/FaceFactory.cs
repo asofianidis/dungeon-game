@@ -127,6 +127,9 @@ namespace Depthbound
                 c = Color.Lerp(c, s.brow, Fill(brow));
             }
 
+            // Nose: a soft shadow on one side of a tiny bridge, anime style.
+            c = Color.Lerp(c, s.skin * 0.82f, 0.6f * Fill(Ellipse(u, v, 0.508f, 0.345f, 0.007f, 0.012f), 0.006f));
+
             // Mouth
             float mv = 0.205f;
             float mouth = s.smile ? Arc(u, v, 0.5f, mv - 0.004f, 5f, 0.465f, 0.535f, 0.0035f) : Arc(u, v, 0.5f, mv, -2f, 0.47f, 0.53f, 0.003f);

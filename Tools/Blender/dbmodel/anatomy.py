@@ -171,16 +171,17 @@ def head_field(c, r, role, ears=1.0, jaw=1.0, nose=1.0, chin=1.0, h=None, ear_ro
     # Cranium (top at +1.08r) and the back of the skull.
     F.sphere(c + V(0, 0.06 * r, 0.14 * r), 0.94 * r)
     F.ellipsoid(c + V(0, 0.22 * r, 0.05 * r), (0.86 * r, 0.8 * r, 0.85 * r), k=0.2 * r)
-    # Face: wide at the cheekbones, receding along a V-shaped jawline to a small chin at -r.
-    F.ellipsoid(c + V(0, -0.22 * r, -0.2 * r), (0.82 * r, 0.7 * r, 0.62 * r), k=0.2 * r)
-    F.ellipsoid(c + V(0, -0.3 * r, -0.56 * r * chin), (0.52 * r * jaw, 0.55 * r, 0.44 * r * chin), k=0.22 * r)
-    chin_p = c + V(0, -0.6 * r, -0.94 * r * chin)
+    # Face: a soft oval, full at the cheeks, rounding along the jawline to a small chin at -r.
+    # Generous blends keep every plane curved, so cel shading never picks out flat facets.
+    F.ellipsoid(c + V(0, -0.2 * r, -0.2 * r), (0.8 * r, 0.7 * r, 0.62 * r), k=0.25 * r)
+    F.ellipsoid(c + V(0, -0.32 * r, -0.58 * r * chin), (0.46 * r * jaw, 0.52 * r, 0.42 * r * chin), k=0.28 * r)
+    chin_p = c + V(0, -0.55 * r, -0.92 * r * chin)
     for s in (1, -1):
-        F.cone(c + V(s * 0.66 * r * jaw, 0.05 * r, -0.35 * r), chin_p + V(s * 0.08 * r, 0.02 * r, 0.02 * r), 0.2 * r, 0.1 * r, k=0.15 * r)
-        F.ellipsoid(c + V(s * 0.45 * r, -0.45 * r, -0.42 * r), (0.28 * r, 0.24 * r, 0.26 * r), k=0.16 * r)
-    F.sphere(chin_p, 0.1 * r, k=0.16 * r)
-    if nose:
-        F.cone(c + V(0, -0.87 * r, -0.2 * r), c + V(0, -0.95 * r, -0.38 * r), 0.03 * r * nose, 0.055 * r * nose, k=0.06 * r)
+        F.cone(c + V(s * 0.56 * r * jaw, 0.05 * r, -0.35 * r), chin_p + V(s * 0.06 * r, 0.02 * r, 0.02 * r), 0.22 * r, 0.11 * r, k=0.22 * r)
+        F.ellipsoid(c + V(s * 0.42 * r, -0.48 * r, -0.38 * r), (0.3 * r, 0.25 * r, 0.28 * r), k=0.22 * r)
+    F.sphere(chin_p, 0.11 * r, k=0.2 * r)
+    if nose:   # a small anime nose: a soft ridge, not a bulb
+        F.cone(c + V(0, -0.86 * r, -0.24 * r), c + V(0, -0.9 * r, -0.35 * r), 0.02 * r * nose, 0.034 * r * nose, k=0.08 * r)
     F.cone(c + V(0, 0.2 * r, -0.6 * r), c + V(0, 0.22 * r, -1.4 * r), 0.3 * r, 0.3 * r, k=0.05 * r)
     if ears:
         for s in (1, -1):
@@ -205,6 +206,33 @@ def face_uv(ob, c, r):
                 uv.data[li].uv = (0.5 + (co.x - c.x) / (2.04 * r), 0.5 + (co.z - c.z) / (2.12 * r))
             else:
                 uv.data[li].uv = (0.02, 0.02)
+    return ob
+
+
+def face_normals(ob, c, r, amount=0.75):
+    """Anime face shading: bend the face's normals toward a smooth oval around the head, so the
+    cel terminator sweeps cleanly across the face instead of catching the nose, cheeks and jaw."""
+    me = ob.data
+    n = len(me.vertices)
+    co = np.zeros(n * 3)
+    me.vertices.foreach_get("co", co)
+    P = co.reshape(-1, 3)
+    # Current (gradient) normals, averaged per vertex from the corner normals.
+    cn = np.zeros(len(me.loops) * 3)
+    me.corner_normals.foreach_get("vector", cn)
+    vi = np.zeros(len(me.loops), dtype=np.int64)
+    me.loops.foreach_get("vertex_index", vi)
+    N = np.zeros((n, 3))
+    np.add.at(N, vi, cn.reshape(-1, 3))
+    N /= np.maximum(np.linalg.norm(N, axis=1), 1e-9)[:, None]
+    oc = np.array((c.x, c.y + 0.15 * r, c.z - 0.1 * r))
+    rad = np.array((0.95, 0.95, 1.1)) * r
+    E = (P - oc) / rad ** 2
+    E /= np.maximum(np.linalg.norm(E, axis=1), 1e-9)[:, None]
+    w = amount * np.clip((c.y + 0.15 * r - P[:, 1]) / (0.45 * r), 0, 1) * np.clip((P[:, 2] - (c.z - 1.2 * r)) / (0.2 * r), 0, 1)
+    M = N * (1 - w[:, None]) + E * w[:, None]
+    M /= np.maximum(np.linalg.norm(M, axis=1), 1e-9)[:, None]
+    me.normals_split_custom_set_from_vertices([Vector(v) for v in M])
     return ob
 
 
