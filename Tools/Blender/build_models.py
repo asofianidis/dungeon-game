@@ -304,7 +304,7 @@ def princess():
     rig = sculpted_rig(J, hc + V3(0, 0, r * 1.1))
     parts = []
 
-    BF = A.body_field(J, "SkinPale", female=True, bust=1.1)
+    BF = A.body_field(J, "SkinPale", female=True, bust=1.35)
     BF.paint(lambda x, y, z: z - 0.37 * H, "Stocking")
     tail_root = V3(0, 0.05 * H, 0.5 * H)
     tpts = A.tail(BF, tail_root, 0.5, 0.016 * H, tip_role="Cloth", heart=True)
@@ -313,7 +313,7 @@ def princess():
     rig.add("Tail3", tpts[6], tpts[9], "Tail2")
     body = A.make(BF, "Body", faces=8000)
 
-    torso = A.body_field(J, "Cloth", female=True, bust=1.1, arms=False, legs=False, h=0.004 * H)
+    torso = A.body_field(J, "Cloth", female=True, bust=1.35, arms=False, legs=False, h=0.004 * H)
     legs = A.body_field(J, "Dark", female=True, torso=False, arms=False, h=0.004 * H)
 
     head = A.make(A.head_field(hc, r, "FacePrincess", ears=0.55, ear_role="SkinPale"), "Head", faces=9000)
