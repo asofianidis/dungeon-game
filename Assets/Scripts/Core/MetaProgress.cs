@@ -32,6 +32,8 @@ namespace Depthbound
         public int bestDepth, totalRuns, totalKills, bossKills;
         public List<string> codex = new List<string>();
         public string lastDailyPlayed = "";
+        public int questStage, artifactsReported;
+        public List<string> artifacts = new List<string>();
 
         static string FilePath => Path.Combine(Application.persistentDataPath, "depthbound_meta.json");
 
@@ -81,8 +83,12 @@ namespace Depthbound
             return new MetaProgress();
         }
 
+        /// <summary>Dev tools set this so automated sessions never overwrite the player's save.</summary>
+        public static bool ReadOnly;
+
         public void Save()
         {
+            if (ReadOnly) return;
             try { File.WriteAllText(FilePath, JsonUtility.ToJson(this, true)); }
             catch (Exception e) { Debug.LogWarning("Failed to save meta progress: " + e.Message); }
         }

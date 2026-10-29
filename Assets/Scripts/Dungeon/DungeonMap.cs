@@ -7,6 +7,7 @@ namespace Depthbound
     {
         Wall, Floor, StairsDown, Water, Lava, Chest, ChestOpen, Shrine, ShrineUsed,
         Fountain, FountainUsed, Merchant, Trap, TrapSprung, Rubble, Ice,
+        Carpet, Pillar, Brazier, Throne, Princess, Portal,
     }
 
     public enum GenType { Bsp, Caves, Ruins, Hybrid }
@@ -29,22 +30,28 @@ namespace Depthbound
         public static readonly List<Biome> All = new List<Biome>
         {
             new Biome { name = "Forgotten Crypt", gen = GenType.Bsp, floorA = C("3a3632"), floorB = C("2e2b28"), wallA = C("6a645a"), wallB = C("4a453e"),
-                monsters = new[] { "rat", "skeleton", "zombie", "skel_archer", "ghost", "cultist" }, boss = "bonelord" },
+                monsters = new[] { "rat", "skeleton", "zombie", "skel_archer", "ghost", "cultist", "crusader", "crossbowman" }, boss = "bonelord" },
             new Biome { name = "Fungal Caverns", gen = GenType.Caves, floorA = C("2e3a2c"), floorB = C("26302a"), wallA = C("5a4a5e"), wallB = C("3e3242"),
-                liquid = Tile.Water, liquidAmount = 0.03f, monsters = new[] { "spider", "myconid", "bat", "slime", "broodmother" }, boss = "sporequeen" },
+                liquid = Tile.Water, liquidAmount = 0.03f, monsters = new[] { "spider", "myconid", "bat", "slime", "broodmother", "crusader", "crossbowman", "inquisitor" }, boss = "sporequeen" },
             new Biome { name = "Sunken Ruins", gen = GenType.Ruins, floorA = C("34403e"), floorB = C("2a3534"), wallA = C("5e7068"), wallB = C("43524c"),
-                liquid = Tile.Water, liquidAmount = 0.08f, monsters = new[] { "drowned", "crab", "siren", "deepone", "ruin_archer" }, boss = "leviathan" },
+                liquid = Tile.Water, liquidAmount = 0.08f, monsters = new[] { "drowned", "crab", "siren", "deepone", "ruin_archer", "crusader", "inquisitor", "war_priest" }, boss = "leviathan" },
             new Biome { name = "Frozen Depths", gen = GenType.Caves, floorA = C("3c4652"), floorB = C("323b46"), wallA = C("8aa4c0"), wallB = C("5c7290"),
-                liquid = Tile.Ice, liquidAmount = 0.06f, monsters = new[] { "wolf", "ice_elem", "yeti", "frost_wraith", "ice_archer" }, boss = "colossus" },
+                liquid = Tile.Ice, liquidAmount = 0.06f, monsters = new[] { "wolf", "ice_elem", "yeti", "frost_wraith", "ice_archer", "crusader", "crossbowman", "war_priest" }, boss = "colossus" },
             new Biome { name = "Molten Forge", gen = GenType.Bsp, floorA = C("3a2a24"), floorB = C("30221e"), wallA = C("5a3a30"), wallB = C("402824"),
-                liquid = Tile.Lava, liquidAmount = 0.04f, monsters = new[] { "imp", "fire_golem", "salamander", "forge_guard", "magma_slime" }, boss = "forgemaster" },
+                liquid = Tile.Lava, liquidAmount = 0.04f, monsters = new[] { "imp", "fire_golem", "salamander", "forge_guard", "magma_slime", "crusader", "inquisitor", "war_priest" }, boss = "forgemaster" },
             new Biome { name = "Abyssal Halls", gen = GenType.Hybrid, floorA = C("261e30"), floorB = C("1e1826"), wallA = C("4a3a62"), wallB = C("32284a"),
-                liquid = Tile.Lava, liquidAmount = 0.02f, monsters = new[] { "shade", "horror", "void_caster", "demon", "wisp" }, boss = "hollowking" },
+                liquid = Tile.Lava, liquidAmount = 0.02f, monsters = new[] { "shade", "horror", "void_caster", "demon", "wisp", "crusader", "crossbowman", "inquisitor", "war_priest" }, boss = "hollowking" },
+            // Index 6: the castle hub (depth 0). Not part of the dungeon cycle.
+            new Biome { name = Story.CastleName, gen = GenType.Bsp, floorA = C("3a2228"), floorB = C("2e1a20"), wallA = C("4a2a44"), wallB = C("2e1a2e"),
+                monsters = new string[0], boss = null },
         };
 
-        public static int IndexForDepth(int depth) => ((depth - 1) / 5) % All.Count;
+        public const int DungeonBiomes = 6;
+        public const int HubIndex = 6;
+        public static Biome Hub => All[HubIndex];
+        public static int IndexForDepth(int depth) => depth <= 0 ? HubIndex : ((depth - 1) / 5) % DungeonBiomes;
         public static Biome ForDepth(int depth) => All[IndexForDepth(depth)];
-        public static int Cycle(int depth) => (depth - 1) / (5 * All.Count);
+        public static int Cycle(int depth) => depth <= 0 ? 0 : (depth - 1) / (5 * DungeonBiomes);
     }
 
     public class DungeonMap
@@ -77,12 +84,13 @@ namespace Depthbound
             {
                 case Tile.Floor: case Tile.StairsDown: case Tile.Water: case Tile.Lava: case Tile.ChestOpen:
                 case Tile.ShrineUsed: case Tile.FountainUsed: case Tile.Trap: case Tile.TrapSprung: case Tile.Rubble: case Tile.Ice:
+                case Tile.Carpet:
                     return true;
                 default: return false;
             }
         }
 
-        public static bool IsInteractable(Tile t) => t == Tile.Chest || t == Tile.Shrine || t == Tile.Fountain || t == Tile.Merchant;
+        public static bool IsInteractable(Tile t) => t == Tile.Chest || t == Tile.Shrine || t == Tile.Fountain || t == Tile.Merchant || t == Tile.Princess || t == Tile.Portal;
 
         public bool Walkable(int x, int y) => IsWalkable(Get(x, y));
         public bool PathWalkable(int x, int y) { var t = Get(x, y); return IsWalkable(t) && t != Tile.Lava; }

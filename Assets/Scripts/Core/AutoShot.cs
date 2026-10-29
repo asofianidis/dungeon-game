@@ -1,13 +1,14 @@
 using System;
 using System.Collections;
 using System.IO;
+using System.Linq;
 using UnityEngine;
 
 namespace Depthbound
 {
     /// <summary>
     /// Dev tool: launching the player with "-autoshot &lt;folder&gt;" plays a short scripted session
-    /// and saves screenshots of the main screens, then quits. Used to verify rendering in CI.
+    /// and saves screenshots of the main screens, then quits. It uses a throwaway, read-only save.
     /// </summary>
     public class AutoShot : MonoBehaviour
     {
@@ -31,25 +32,37 @@ namespace Depthbound
         IEnumerator Start()
         {
             Directory.CreateDirectory(dir);
+            MetaProgress.ReadOnly = true;
             var gm = GameManager.Instance;
+            gm.meta = new MetaProgress();
             gm.autopilot = true;
             yield return Frames(30);
             Shot("1_title");
             yield return Frames(5);
 
+            // Arrive at the castle: the princess's introduction opens automatically.
             gm.StartRun(ClassDatabase.Get("pyromancer"), 0, 4242, false);
             var w = gm.world;
             var p = w.player;
+            p.pos = new Vector2(15, 21);
+            p.facing = Vector2.up;
+            yield return Frames(30);
+            Shot("2_hub_dialogue");
+            gm.ui.DebugOpen(0);
+            yield return Frames(20);
+            Shot("3_hub");
+            p.pos = new Vector2(15, 6);
+            p.facing = Vector2.down;
+            yield return Frames(30);
+            Shot("4_hub_gate");
+
+            // Through the gate into depth 1, then fight a small pack.
+            w.TakePortal();
             var rng = new Rng(7);
             for (int i = 0; i < 6; i++) p.AddToBackpack(ItemGenerator.Generate(rng, 8, 200, 1f));
-            p.AddToBackpack(ItemGenerator.GenerateUnique(rng, ItemDatabase.Uniques[0], 8));
-            p.GainXp(400);
             p.LearnSkill(SkillDatabase.Get("fire_bolt"));
             yield return Frames(20);
-            Shot("2_start");
-
-            // Spawn a small pack nearby and fight it for a couple of seconds.
-            foreach (var id in new[] { "skeleton", "skeleton", "skel_archer" })
+            foreach (var id in new[] { "skeleton", "crusader", "crossbowman" })
             {
                 var spot = w.FindFreeNear(p.Pos + new Vector2Int(3, 0), 3);
                 if (spot == null) continue;
@@ -61,42 +74,50 @@ namespace Depthbound
             while (fight < 3f)
             {
                 fight += Time.deltaTime;
+                if (p.LifePct < 0.5f) p.life = p.MaxLife;
                 var foe = w.NearestEnemy(8f);
                 if (foe != null && !w.PlayerUseSkill(0, foe.pos)) w.PlayerAttack(foe.pos);
-                if (!shot && fight > 0.9f && (w.projectiles.Count > 0 || fight > 1.5f)) { shot = true; Shot("3_combat"); }
+                if (!shot && fight > 0.8f) { shot = true; Shot("5_combat"); }
                 yield return null;
             }
 
-            // Run toward the stairs, fighting anything that shows up, for ~12 seconds of real time.
-            float elapsed = 0;
+            // Walk toward the stairs for a bit.
             var stairsField = w.map.DistanceField(new[] { w.map.stairs }, true);
-            while (elapsed < 12f && !p.dead)
+            float elapsed = 0;
+            while (elapsed < 6f && !p.dead)
             {
                 elapsed += Time.deltaTime;
                 if (p.LifePct < 0.5f) p.life = p.MaxLife;
                 var e = w.NearestEnemy(7f);
-                if (e != null)
-                {
-                    p.moveInput = Vector2.zero;
-                    if (!w.PlayerUseSkill(0, e.pos)) w.PlayerAttack(e.pos);
-                }
-                else
-                {
-                    p.moveInput = w.SteerAlong(p, stairsField) ?? Vector2.zero;
-                }
+                if (e != null) { p.moveInput = Vector2.zero; if (!w.PlayerUseSkill(0, e.pos)) w.PlayerAttack(e.pos); }
+                else p.moveInput = w.SteerAlong(p, stairsField) ?? Vector2.zero;
                 yield return null;
             }
             p.moveInput = Vector2.zero;
+            Shot("6_explore");
             yield return Frames(5);
-            Shot("4_explore");
+
+            // A guardian falls: its artifact drops and a portal home opens.
+            w.depth = 5;
+            w.GenerateFloor();
             yield return Frames(5);
+            var boss = w.actors.OfType<Monster>().FirstOrDefault(m => m.isBoss);
+            if (boss != null)
+            {
+                p.pos = boss.pos + new Vector2(0, -2.2f);
+                if (w.map.Walkable(p.x, p.y) == false) p.pos = boss.pos;
+                yield return Frames(10);
+                Shot("7_boss");
+                w.Kill(boss, p);
+                yield return Frames(40);
+                Shot("8_artifact");
+            }
             gm.ui.DebugOpen(1);
             yield return Frames(5);
-            Shot("5_inventory");
+            Shot("9_inventory");
+            gm.ui.DebugOpen(3);
             yield return Frames(5);
-            gm.ui.DebugOpen(2);
-            yield return Frames(5);
-            Shot("6_skills");
+            Shot("10_hero");
             yield return Frames(10);
             Application.Quit();
         }

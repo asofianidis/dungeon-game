@@ -33,6 +33,40 @@ namespace Depthbound
             return map;
         }
 
+        /// <summary>Hand-built castle hub: a throne hall with the princess, an antechamber with the Abyssal Gate.</summary>
+        public static DungeonMap GenerateHub(bool withChest)
+        {
+            var m = new DungeonMap(31, 32) { biome = Biomes.Hub };
+            void Room(int x0, int y0, int x1, int y1)
+            {
+                for (int x = x0; x <= x1; x++) for (int y = y0; y <= y1; y++) m.tiles[x, y] = Tile.Floor;
+            }
+            Room(6, 12, 24, 28);   // throne hall
+            Room(14, 8, 16, 11);   // grand corridor
+            Room(9, 2, 21, 7);     // antechamber
+            Room(2, 18, 5, 22);    // west alcove
+            Room(25, 18, 28, 22);  // east alcove
+            for (int y = 3; y <= 26; y++)
+                for (int x = 14; x <= 16; x++)
+                    if (m.tiles[x, y] == Tile.Floor && (x == 15 || y >= 8)) m.tiles[x, y] = Tile.Carpet;
+            m.tiles[15, 27] = Tile.Throne;
+            m.tiles[15, 25] = Tile.Princess;
+            foreach (int x in new[] { 9, 21 })
+                foreach (int y in new[] { 15, 18, 21, 24 })
+                    m.tiles[x, y] = Tile.Pillar;
+            foreach (var b in new[] { (11, 26), (19, 26), (7, 13), (23, 13), (10, 6), (20, 6) }) m.tiles[b.Item1, b.Item2] = Tile.Brazier;
+            m.tiles[15, 2] = Tile.Portal;
+            m.tiles[11, 3] = Tile.Fountain;
+            m.tiles[19, 3] = Tile.Merchant;
+            m.tiles[3, 20] = Tile.Shrine;
+            if (withChest) m.tiles[27, 20] = Tile.Chest;
+            m.start = new Vector2Int(15, 14);
+            m.stairs = new Vector2Int(15, 3); // the tile in front of the Abyssal Gate
+            var rng = new Rng(777);
+            for (int x = 0; x < m.w; x++) for (int y = 0; y < m.h; y++) m.variant[x, y] = (byte)rng.Range(0, 256);
+            return m;
+        }
+
         // ------------------------------------------------------------------ layouts
 
         static void Carve(DungeonMap m, RectInt r)

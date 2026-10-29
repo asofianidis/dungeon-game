@@ -80,6 +80,7 @@ namespace Depthbound.EditorTools
 
         static void Decide(World w, Player p, Brain b, Rng rng, int primary, bool caster)
         {
+            if (w.InHub) { w.TakePortal(); return; }
             Spend(p, primary, rng);
             if (rng.Chance(0.05f))
             {

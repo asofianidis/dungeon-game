@@ -10,6 +10,7 @@ namespace Depthbound
         public Item item;
         public int gold;
         public int potion; // 1 = health, 2 = mana
+        public string artifact;
         public bool warned;
     }
 
@@ -34,7 +35,9 @@ namespace Depthbound
         public readonly RunStats stats = new RunStats();
         public readonly List<(string text, Color color)> log = new List<(string, Color)>();
 
-        public int depth = 1, corruption, runSeed, floorVersion, fovVersion;
+        public int depth, corruption, runSeed, floorVersion, fovVersion;
+        /// <summary>Depth the castle's Abyssal Gate leads to.</summary>
+        public int resumeDepth = 1;
         public float time;
         public bool daily;
         public Rng rng;
@@ -64,6 +67,12 @@ namespace Depthbound
             player.metaMods.Add(new StatMod(StatType.AllRes, 2 * meta.Rank(Upgrade.Resilience)));
             player.attrPoints = 2 * meta.Rank(Upgrade.Talent);
             player.skillPoints = meta.Rank(Upgrade.Scholar);
+            foreach (var id in meta.artifacts)
+                if (Story.Get(id) != null) player.metaMods.AddRange(Story.ArtifactBonus());
+            // An Archdemon starts above the rabble.
+            player.level = 3;
+            player.attrPoints += 10;
+            player.skillPoints += 2;
             player.learned[cls.startSkill] = 1;
             player.hotbar[0] = cls.startSkill;
 
@@ -83,7 +92,8 @@ namespace Depthbound
             Log($"{cls.name} enters the depths. Seed {seed}{(corruption > 0 ? $"  Corruption {corruption}" : "")}", new Color(1f, 0.85f, 0.5f));
         }
 
-        public bool IsBossFloor => depth % 5 == 0;
+        public bool IsBossFloor => depth > 0 && depth % 5 == 0;
+        public bool InHub => depth == 0;
         public int MonsterLevel => depth + corruption * 2;
 
         public void Log(string text, Color c)
@@ -102,7 +112,7 @@ namespace Depthbound
         public void GenerateFloor()
         {
             var floorRng = new Rng(runSeed * 31 + depth * 7919 + 17);
-            map = DungeonGenerator.Generate(floorRng, depth);
+            map = InHub ? DungeonGenerator.GenerateHub(resumeDepth == 1) : DungeonGenerator.Generate(floorRng, depth);
             var allies = actors.Where(a => a != player && a.faction == Faction.Player && !a.dead).ToList();
             actors.Clear();
             projectiles.Clear();
@@ -114,13 +124,14 @@ namespace Depthbound
                 var spot = FindFreeNear(map.start, 4);
                 if (spot != null) Place(a, spot.Value);
             }
-            SpawnMonsters(floorRng);
+            if (!InHub) SpawnMonsters(floorRng);
             if (IsBossFloor) SpawnBoss(floorRng);
             if (HasMerchant()) StockShop(floorRng);
             floorVersion++;
             lastPlayerTile = new Vector2Int(-1, -1);
             OnPlayerTileChanged();
-            Log($"Depth {depth} - {map.biome.name}" + (IsBossFloor ? "  (a powerful presence stirs...)" : ""), new Color(0.7f, 0.85f, 1f));
+            if (InHub) Log($"{Story.CastleName}. {Story.Princess} awaits you in the throne hall.", Story.PrincessColor);
+            else Log($"Depth {depth} - {map.biome.name}" + (IsBossFloor ? "  (a powerful presence stirs...)" : ""), new Color(0.7f, 0.85f, 1f));
         }
 
         bool HasMerchant()
@@ -230,7 +241,7 @@ namespace Depthbound
 
         void StockShop(Rng r)
         {
-            int ilvl = depth + 2;
+            int ilvl = Mathf.Max(depth, resumeDepth - 1) + 2;
             for (int i = 0; i < 8; i++)
             {
                 var rar = r.Weighted(new[] { (Rarity.Magic, 50f), (Rarity.Rare, 35f), (Rarity.Epic, 12f), (Rarity.Legendary, 3f) }, t => t.Item2).Item1;
@@ -407,7 +418,11 @@ namespace Depthbound
 
         public void UpdateFov()
         {
-            map.ComputeFov(player.x, player.y, Mathf.Clamp(Mathf.RoundToInt(player.Get(StatType.LightRadius)), 3, 14));
+            if (InHub)
+            {
+                for (int x = 0; x < map.w; x++) for (int y = 0; y < map.h; y++) map.visible[x, y] = map.explored[x, y] = true;
+            }
+            else map.ComputeFov(player.x, player.y, Mathf.Clamp(Mathf.RoundToInt(player.Get(StatType.LightRadius)), 3, 14));
             fovVersion++;
         }
 
@@ -634,6 +649,8 @@ namespace Depthbound
                     case Tile.Shrine: return "[E] Touch shrine";
                     case Tile.Fountain: return "[E] Drink from fountain";
                     case Tile.Merchant: return "[E] Trade";
+                    case Tile.Princess: return $"[E] Speak with {Story.Princess}";
+                    case Tile.Portal: return InHub ? (resumeDepth > 1 ? $"[E] Return to depth {resumeDepth}" : "[E] Enter the Abyssal Gate") : $"[E] Return to {Story.CastleName}";
                 }
             }
             if (map.Get(player.x, player.y) == Tile.StairsDown) return map.stairsSealed ? "The stairs are sealed" : "[E] Descend";
@@ -668,6 +685,26 @@ namespace Depthbound
             player.Heal(player.MaxLife * 0.15f);
             GenerateFloor();
             return true;
+        }
+
+        /// <summary>The hub gate leads down; a guardian's portal leads back to the castle.</summary>
+        public void TakePortal()
+        {
+            player.statuses.Clear();
+            if (InHub)
+            {
+                depth = resumeDepth;
+                stats.deepest = Mathf.Max(stats.deepest, depth);
+                Log("You step through the Abyssal Gate...", new Color(0.8f, 0.6f, 1f));
+            }
+            else
+            {
+                resumeDepth = depth + 1;
+                depth = 0;
+                player.life = player.MaxLife;
+                player.mana = player.MaxMana;
+            }
+            GenerateFloor();
         }
 
         bool InteractTile(int x, int y, Tile t)
@@ -713,6 +750,12 @@ namespace Depthbound
                 case Tile.Merchant:
                     if (GameManager.Instance != null) GameManager.Instance.OpenShop();
                     return true;
+                case Tile.Princess:
+                    if (GameManager.Instance != null) GameManager.Instance.ui.OpenDialogue(Story.PrincessDialogue(meta));
+                    return true;
+                case Tile.Portal:
+                    TakePortal();
+                    return true;
             }
             return false;
         }
@@ -735,13 +778,45 @@ namespace Depthbound
             else if (t == Tile.StairsDown && map.stairsSealed) Log("The stairs are sealed by a dark power.", new Color(0.8f, 0.8f, 1f));
         }
 
+        void PlaceReturnPortal(Vector2Int near)
+        {
+            for (int r = 1; r <= 5; r++)
+                for (int dx = -r; dx <= r; dx++)
+                    for (int dy = -r; dy <= r; dy++)
+                    {
+                        int x = near.x + dx, y = near.y + dy;
+                        if (map.Get(x, y) != Tile.Floor || !TileFree(x, y) || ground.Any(g => g.x == x && g.y == y)) continue;
+                        int open = 0;
+                        for (int ox = -1; ox <= 1; ox++) for (int oy = -1; oy <= 1; oy++) if (map.Walkable(x + ox, y + oy)) open++;
+                        if (open < 8) continue; // never plug a corridor
+                        map.Set(x, y, Tile.Portal);
+                        Log($"A portal back to {Story.CastleName} shimmers open.", new Color(0.8f, 0.6f, 1f));
+                        return;
+                    }
+        }
+
         void PickUpNearby()
         {
             for (int i = ground.Count - 1; i >= 0; i--)
             {
                 var g = ground[i];
                 if ((new Vector2(g.x, g.y) - player.pos).sqrMagnitude > 0.5f) continue;
-                if (g.gold > 0)
+                if (g.artifact != null)
+                {
+                    var a = Story.Get(g.artifact);
+                    if (!meta.artifacts.Contains(g.artifact))
+                    {
+                        meta.artifacts.Add(g.artifact);
+                        meta.Save();
+                        player.metaMods.AddRange(Story.ArtifactBonus());
+                        player.Recalc();
+                    }
+                    Log($"You recovered the {a?.name}! ({meta.artifacts.Count}/{Story.Artifacts.Count}) {Story.BonusText}.", new Color(1f, 0.6f, 0.9f));
+                    Fx.Text(player.pos, a?.name ?? "Artifact", new Color(1f, 0.6f, 0.9f), 1.4f);
+                    Fx.Burst(player.pos, 2f, new Color(1f, 0.5f, 0.9f));
+                    ground.RemoveAt(i);
+                }
+                else if (g.gold > 0)
                 {
                     player.gold += g.gold; stats.goldEarned += g.gold;
                     Fx.Text(player.pos, $"+{g.gold}g", new Color(1f, 0.85f, 0.3f), 0.8f);
@@ -986,6 +1061,13 @@ namespace Depthbound
                 stats.bossKills++;
                 map.stairsSealed = false;
                 Log($"{m.name} has been vanquished! The stairs are unsealed.", new Color(1f, 0.7f, 0.2f));
+                var art = Story.ForBiome(Biomes.IndexForDepth(depth));
+                if (art != null && !meta.artifacts.Contains(art.id) && !ground.Any(g => g.artifact == art.id))
+                {
+                    AddGround(m.Pos, new GroundItem { artifact = art.id });
+                    Log($"The {art.name} lies where the guardian fell!", new Color(1f, 0.6f, 0.9f));
+                }
+                PlaceReturnPortal(m.Pos);
             }
             if (!byPlayer) { DropLoot(m); return; }
 

@@ -1,8 +1,24 @@
 # Depthbound
 
-A procedurally generated, real-time 2D action roguelike dungeon crawler built in Unity 6. Dive as deep as you can, die, grow stronger, and dive again.
+A procedurally generated, real-time 3D action roguelike built in Unity 6. You are an Archdemon, the champion of a succubus princess, diving into an endless Abyss to recover her family's stolen artifacts from the human army.
 
-Everything (dungeons, monsters, sprites, icons, and UI) is generated from code, so the project has no binary art dependencies.
+Dungeons are generated in code. Characters and props are low-poly models built by a Blender script (`Tools/Blender`).
+
+## Story and the castle hub
+
+- Every run begins in **Castle Vaelthorn**, the seat of **Princess Lysandra**, Succubus Princess of the Ninth Circle. Her throne hall has the princess, a quartermaster (shop), a healing fountain, a shrine, an armory chest, and the **Abyssal Gate**.
+- On your first visit she gives you the quest. The human army's **Radiant Crusade** scattered the **six Royal Artifacts of House Vaelthorn** into the Abyss and bound its guardians to keep them. Without them, the castle's wards fail and the human army marches in.
+- Each biome's guardian (every 5th depth) holds one artifact: the Crown of Ashen Night, Thornveil Mirror, Tidebound Chalice, Heart of the Frozen Throne, Hellforge Scepter, and Sovereign's Sigil. Each one you recover is **permanent** and grants +8% Attack/Spell Damage and +5% Life on every future run.
+- A slain guardian opens a **portal home**. Report to the princess, restock, then take the gate back to the next depth. Recover all six to break the human army.
+- **The Radiant Crusade** (crusaders, crossbowmen, inquisitors, war priests) fights alongside the Abyss's monsters at every depth.
+- You play a **High Demon**: an Archdemon who starts at level 3. Classes are demonic disciplines (Hellblade, Shadowfiend, Infernalist, Hellhunter, Rimefiend, Dread Templar, Soulbinder, Blood Fiend, Storm Archon, Plague Lord).
+
+## 3D presentation
+
+- Each floor is a single generated mesh: textured walls and floors, emissive lava, and fog of war in the vertex colors.
+- An angled perspective camera with moonlight shadows, a torch light that follows you, and flickering braziers and portals.
+- Blender-built models for the Archdemon, the princess, human soldiers, six creature body types (tinted per monster), and every prop.
+- Procedural animation: walk cycles, wing flaps, tail sway, attack swings, red-glowing wind-ups before monster attacks, and hit flashes.
 
 ## Real-time combat
 
@@ -33,7 +49,7 @@ Everything (dungeons, monsters, sprites, icons, and UI) is generated from code, 
 | Affixes | 56 prefixes/suffixes that scale with item level |
 | Rarities | Common, Magic, Rare, Epic, Legendary |
 | Legendaries | 32 uniques with keystones, granted skills, and procs |
-| Monsters | 30 biome monsters + 6 bosses, 15 elite affixes (Vampiric, Volatile, Teleporter, ...) |
+| Monsters | 30 biome monsters + 4 human army units + 6 artifact guardians, 15 elite affixes |
 
 Rare and better gear can:
 
@@ -51,7 +67,7 @@ Combined with attribute allocation and 72 skills that stack across schools, this
 | Attack | Hold Left Mouse (aims at the cursor) |
 | Dodge roll | Space |
 | Skills | Hold 1-8 (aimed at the cursor); Right Mouse casts slot 1 |
-| Interact / descend | E (or click chests, shrines, merchants) |
+| Interact / talk / portals / descend | E (or click chests, shrines, merchants) |
 | Potions | R (health), F (mana) |
 | Panels | I inventory, K skills, P hero, H help, Esc menu |
 | Zoom | Mouse wheel |
@@ -61,20 +77,25 @@ Combined with attribute allocation and 72 skills that stack across schools, this
 ```
 Assets/
   Scenes/Main.unity          Single bootstrap scene
+  Resources/Models/          FBX models exported by Tools/Blender/build_models.py
+  Resources/Shaders/         Depthbound/Lit (models) and Depthbound/Map (dungeon mesh with fog of war)
   Scripts/
-    Core/      GameManager (state + input), World (real-time simulation, collision, floors, loot), Rng, MetaProgress
-    Dungeon/   DungeonMap (tiles, FOV, LOS, distance fields), DungeonGenerator (BSP/caves/ruins/hybrid)
+    Core/      GameManager (state + input), World (real-time simulation, hub, floors, loot), Story (princess + artifacts), Rng, MetaProgress
+    Dungeon/   DungeonMap (tiles, FOV, LOS, distance fields), DungeonGenerator (BSP/caves/ruins/hybrid + castle hub)
     Entities/  Actor, Player, Monster, class + monster databases
     Stats/     StatType definitions and formatting
     Skills/    SkillDef, SkillDatabase (all 72 + monster/proc skills), SkillExecutor
     Items/     Item, ItemDatabase (bases, affixes, legendaries), ItemGenerator
     Combat/    Combat (hit resolution, statuses, procs), Projectile, MonsterAI (real-time steering, windups)
-    Rendering/ SpriteFactory (procedural pixel art), WorldRenderer, Fx
+    Rendering/ WorldRenderer (3D), ModelLibrary (FBX loading/materials), ModelRig (procedural animation), SpriteFactory (textures/icons), Fx
     UI/        GameUI (IMGUI: all screens and panels)
   Editor/
     ProjectSetup.cs   Menu: Depthbound > Setup Main Scene / Build Windows
     SmokeTest.cs      Headless test: data integrity, 300 generated floors, movement/navigation, simulated runs per class
     BalanceBot.cs     Real-time autoplay bot that reports how deep each class gets in an hour of play
+Tools/Blender/
+  build_models.py    Builds every model from primitives and exports FBX
+  preview_models.py  Renders a lineup PNG of exported models for a quick visual check
 ```
 
 ## Running
@@ -94,7 +115,10 @@ Unity.exe -batchmode -nographics -projectPath . -executeMethod Depthbound.Editor
 # Windows build -> Builds/Windows/Depthbound.exe
 Unity.exe -batchmode -nographics -projectPath . -executeMethod Depthbound.EditorTools.ProjectSetup.BuildWindows -logFile build.log
 
-# Scripted screenshots from a built player
+# Rebuild the 3D models with Blender 5.x (writes Assets/Resources/Models/*.fbx)
+blender -b --factory-startup --python Tools/Blender/build_models.py -- Assets/Resources/Models
+
+# Scripted screenshots from a built player (uses a throwaway save)
 Builds/Windows/Depthbound.exe -screen-width 1600 -screen-height 900 -screen-fullscreen 0 -autoshot shots
 ```
 
@@ -102,5 +126,6 @@ Builds/Windows/Depthbound.exe -screen-width 1600 -screen-height 900 -screen-full
 
 - Save and resume mid-run
 - Sound effects and music
-- Hand-made art (e.g. Blender-rendered sprite sheets) to replace the procedural placeholders
+- Skinned, keyframed animations and more detailed models
+- More castle NPCs and branching dialogue
 - Set items, crafting/rerolling at the merchant, more biomes and bosses

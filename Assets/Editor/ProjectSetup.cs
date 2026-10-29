@@ -16,8 +16,8 @@ namespace Depthbound.EditorTools
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             var camGo = new GameObject("Main Camera") { tag = "MainCamera" };
             var cam = camGo.AddComponent<Camera>();
-            cam.orthographic = true;
-            cam.orthographicSize = 8.5f;
+            cam.orthographic = false;
+            cam.fieldOfView = 40f;
             cam.clearFlags = CameraClearFlags.SolidColor;
             cam.backgroundColor = new Color(0.02f, 0.02f, 0.03f);
             camGo.transform.position = new Vector3(0, 0, -10);

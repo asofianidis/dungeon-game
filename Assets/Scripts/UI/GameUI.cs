@@ -8,7 +8,7 @@ namespace Depthbound
     /// <summary>Immediate-mode UI for every screen. Coordinates are in a virtual 900px-tall space.</summary>
     public class GameUI : MonoBehaviour
     {
-        enum Panel { None, Inventory, Skills, Character, Help, Pause }
+        enum Panel { None, Inventory, Skills, Character, Help, Pause, Dialogue }
 
         const float VirtualHeight = 900f;
 
@@ -40,6 +40,25 @@ namespace Depthbound
         public void OpenShop() { shopOpen = true; panel = Panel.Inventory; }
         public void DebugOpen(int p) { panel = (Panel)p; }
 
+        List<DialoguePage> dialogue;
+        int dialogueIndex, dialogueFrame;
+
+        public void OpenDialogue(List<DialoguePage> pages)
+        {
+            if (pages == null || pages.Count == 0) return;
+            dialogue = pages;
+            dialogueIndex = 0;
+            dialogueFrame = Time.frameCount;
+            shopOpen = false;
+            panel = Panel.Dialogue;
+        }
+
+        void AdvanceDialogue()
+        {
+            dialogueIndex++;
+            if (dialogue == null || dialogueIndex >= dialogue.Count) { dialogue = null; panel = Panel.None; }
+        }
+
         public bool MouseOverUI()
         {
             var m = new Vector2(Input.mousePosition.x / scale, (Screen.height - Input.mousePosition.y) / scale);
@@ -50,6 +69,14 @@ namespace Depthbound
         void Update()
         {
             if (GM == null || GM.state != GameState.Playing) return;
+            if (panel == Panel.Dialogue)
+            {
+                // Ignore the key press that opened the dialogue.
+                if (Time.frameCount != dialogueFrame && (Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.E) || Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter)))
+                    AdvanceDialogue();
+                if (Input.GetKeyDown(KeyCode.Escape)) { dialogue = null; panel = Panel.None; }
+                return;
+            }
             if (Input.GetKeyDown(KeyCode.Escape))
             {
                 if (shopOpen) { shopOpen = false; panel = Panel.None; }
@@ -201,7 +228,7 @@ namespace Depthbound
             Backdrop();
             var m = GM.meta;
             Shadowed(new Rect(0, 120, VW, 80), "DEPTHBOUND", title, new Color(0.95f, 0.75f, 0.35f));
-            GUI.Label(new Rect(0, 200, VW, 30), "<i>How deep can you go?</i>", center);
+            GUI.Label(new Rect(0, 200, VW, 30), "<i>The Archdemon's Descent - recover the Royal Artifacts of House Vaelthorn</i>", center);
             float w = 320, x = (VW - w) / 2, y = 280;
             if (GUI.Button(new Rect(x, y, w, 46), "New Run", button)) { selectedClass = null; GM.pendingDaily = false; GM.state = GameState.ClassSelect; }
             y += 56;
@@ -221,7 +248,7 @@ namespace Depthbound
         {
             Backdrop();
             var m = GM.meta;
-            Shadowed(new Rect(0, 20, VW, 50), GM.pendingDaily ? "DAILY DESCENT - Choose your hero" : "Choose your hero", new GUIStyle(title) { fontSize = 34 }, new Color(0.95f, 0.8f, 0.5f));
+            Shadowed(new Rect(0, 20, VW, 50), GM.pendingDaily ? "DAILY DESCENT - Choose your discipline" : "Choose your demonic discipline", new GUIStyle(title) { fontSize = 34 }, new Color(0.95f, 0.8f, 0.5f));
             float cw = 230, ch = 150, gap = 12;
             float gx = (VW - (cw * 5 + gap * 4)) / 2, gy = 90;
             for (int i = 0; i < ClassDatabase.All.Count; i++)
@@ -370,6 +397,7 @@ namespace Depthbound
         {
             var w = W;
             if (w == null) return;
+            DrawWorldBars();
             DrawFloatingText();
             DrawHoverInfo();
             DrawTopLeft();
@@ -385,6 +413,39 @@ namespace Depthbound
                 case Panel.Character: DrawCharacter(); break;
                 case Panel.Help: DrawHelp(); break;
                 case Panel.Pause: DrawPause(); break;
+                case Panel.Dialogue: DrawDialogue(); break;
+            }
+        }
+
+        void DrawDialogue()
+        {
+            if (dialogue == null || dialogueIndex >= dialogue.Count) { panel = Panel.None; return; }
+            var page = dialogue[dialogueIndex];
+            Rect(new Rect(0, 0, VW, VH), new Color(0, 0, 0, 0.35f));
+            float w = Mathf.Min(980, VW - 40);
+            var r = Box(new Rect((VW - w) / 2, VH - 300, w, 250));
+            Shadowed(new Rect(r.x + 6, r.y + 2, r.width, 30), $"<b>{page.speaker}</b>", new GUIStyle(header) { fontSize = 22 }, Story.PrincessColor);
+            GUI.Label(new Rect(r.x + 6, r.y + 40, r.width - 12, 150), page.text, new GUIStyle(label) { fontSize = 18 });
+            bool last = dialogueIndex == dialogue.Count - 1;
+            GUI.Label(new Rect(r.x + 6, r.yMax - 34, 300, 26), $"<size=12><color=#999999>{dialogueIndex + 1}/{dialogue.Count}   Space / E to continue</color></size>", small);
+            if (GUI.Button(new Rect(r.xMax - 170, r.yMax - 44, 160, 38), last ? "Farewell" : "Continue", button)) AdvanceDialogue();
+        }
+
+        void DrawWorldBars()
+        {
+            var map = W.map;
+            foreach (var a in W.actors)
+            {
+                if (a.dead || a == W.player || !map.InBounds(a.x, a.y) || !map.visible[a.x, a.y]) continue;
+                var m = a as Monster;
+                bool show = a.life < a.MaxLife - 0.5f || (m != null && m.rank > 0) || a.faction == Faction.Player;
+                if (!show) continue;
+                var p = GM.view.WorldToGui(new Vector3(a.pos.x, 1.35f * a.scale + 0.2f, a.pos.y), scale);
+                float w = 46 * Mathf.Clamp(9f / GM.view.zoom, 0.7f, 1.4f) * (a.isBoss ? 1.6f : 1f);
+                var r = new Rect(p.x - w / 2, p.y - 4, w, 6);
+                Rect(r, new Color(0, 0, 0, 0.8f));
+                Color c = a.faction == Faction.Player ? new Color(0.3f, 0.9f, 0.4f) : m != null && m.rank == 3 ? new Color(1f, 0.3f, 0.1f) : m != null && m.rank == 2 ? new Color(1f, 0.8f, 0.2f) : m != null && m.rank == 1 ? new Color(0.4f, 0.6f, 1f) : new Color(0.9f, 0.15f, 0.15f);
+                Rect(new Rect(r.x + 1, r.y + 1, (r.width - 2) * Mathf.Clamp01(a.life / a.MaxLife), r.height - 2), c);
             }
         }
 
@@ -555,7 +616,7 @@ namespace Depthbound
 
         void DrawPrompt()
         {
-            if (PausesGame && panel != Panel.Pause)
+            if (PausesGame && panel != Panel.Pause && panel != Panel.Dialogue)
                 Shadowed(new Rect(0, 100, VW, 24), "<b>PAUSED</b>  <size=12>(close the panel to resume)</size>", new GUIStyle(center) { fontSize = 16 }, new Color(1f, 0.85f, 0.5f));
             var hint = W.InteractHint();
             if (hint != null && !PausesGame)
@@ -788,13 +849,14 @@ namespace Depthbound
             foreach (var s in new[] { StatType.MoveSpeed, StatType.MagicFind, StatType.GoldFind, StatType.LightRadius, StatType.XpBonus, StatType.LifeOnKill, StatType.ManaOnKill })
                 if (Mathf.Abs(p.Get(s)) > 0.01f) def.AppendLine(Line(s));
 
-            GUI.Label(new Rect(r.x + 330, r.y, 300, r.height - 120), def.ToString(), small);
+            GUI.Label(new Rect(r.x + 330, r.y, 300, r.height - 240), def.ToString(), small);
             GUI.Label(new Rect(r.x, y + 26, 320, r.height - (y - r.y) - 26), off.ToString(), small);
 
             var special = new StringBuilder();
             foreach (var k in p.keystones) special.AppendLine(Col("KEYSTONE  " + EnumUtil.KeystoneDesc(k), new Color(1f, 0.6f, 0.3f)));
             foreach (var pr in p.procs) special.AppendLine(Col($"{pr.chance:0}% {SkillDef.TriggerText(pr.trigger)}: {SkillDatabase.Get(pr.skillId)?.name} (rank {pr.rank})", new Color(0.5f, 0.85f, 1f)));
-            if (special.Length > 0) GUI.Label(new Rect(r.x + 330, r.yMax - 120, 320, 120), special.ToString(), small);
+            special.Insert(0, Story.QuestSummary(GM.meta) + "\n");
+            GUI.Label(new Rect(r.x + 330, r.yMax - 230, 320, 230), special.ToString(), small);
         }
 
         // ------------------------------------------------------------------ help / pause
@@ -803,7 +865,8 @@ namespace Depthbound
         {
             var r = Box(new Rect((VW - 760) / 2, 70, 760, 700), "How to Play");
             string text =
-                "<b>Goal</b>: Dive as deep as you can. Every 5th floor is guarded by a boss that seals the stairs. Biomes cycle and grow deadlier forever.\n\n" +
+                "<b>Story</b>: You are an Archdemon sworn to Princess Lysandra of House Vaelthorn. The human army's Radiant Crusade scattered her family's six Royal Artifacts into the Abyss. Each biome's guardian (every 5th depth) holds one. Recover them all to break the human army. Every artifact permanently empowers you.\n" +
+                "<b>The castle</b>: every run begins in Castle Vaelthorn. Speak with the princess, trade with the quartermaster, then step through the Abyssal Gate. Slain guardians open a portal home; the gate then returns you to the next depth.\n\n" +
                 "<b>Move</b>: WASD / Arrows.    <b>Dodge roll</b>: Space (brief invulnerability).\n" +
                 "<b>Attack</b>: hold Left Mouse toward the cursor. Melee hits the enemy you face; bows and wands fire projectiles.\n" +
                 "<b>Skills</b>: hold 1-8 to cast at the cursor (or the nearest enemy). Right Mouse casts slot 1.\n" +

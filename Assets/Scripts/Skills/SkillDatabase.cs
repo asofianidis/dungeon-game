@@ -257,6 +257,7 @@ namespace Depthbound
             S("m_frostbolt", "Frostbolt", School.Frost, 0, null).MonsterOnly().Act(Targeting.Projectile, 6).Cost(0, 0, 2).Spell(6, 0, Element.Cold).Status(StatusType.Chill, 50, 2);
             S("m_spark", "Spark", School.Storm, 0, null).MonsterOnly().Act(Targeting.Projectile, 6).Cost(0, 0, 2).Spell(7, 0, Element.Lightning).Status(StatusType.Shock, 30, 2);
             S("m_spit", "Acid Spit", School.Venom, 0, null).MonsterOnly().Act(Targeting.Projectile, 5).Cost(0, 0, 2).Spell(4, 0, Element.Poison).Status(StatusType.Poison, 80, 4);
+            S("m_holybolt", "Holy Bolt", School.Holy, 0, null).MonsterOnly().Act(Targeting.Projectile, 6).Cost(0, 0, 2).Spell(7, 0, Element.Holy).Status(StatusType.Weaken, 25, 3);
             S("m_shadowbolt", "Shadow Bolt", School.Void, 0, null).MonsterOnly().Act(Targeting.Projectile, 6).Cost(0, 0, 2).Spell(7, 0, Element.Shadow).Status(StatusType.Weaken, 30, 3);
             S("m_slam", "Slam", School.Warcry, 0, null).MonsterOnly().Act(Targeting.Self, 0, 1).Cost(0, 0, 5).Weap(140, 0).Status(StatusType.Stun, 35, 1);
             S("m_firenova", "Fire Nova", School.Fire, 0, null).MonsterOnly().Act(Targeting.Self, 0, 2).Cost(0, 0, 6).Spell(9, 0, Element.Fire).Status(StatusType.Burn, 50, 3);

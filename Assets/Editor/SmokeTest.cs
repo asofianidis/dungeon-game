@@ -45,7 +45,7 @@ namespace Depthbound.EditorTools
                 if (m.skills != null)
                     foreach (var id in m.skills)
                         if (SkillDatabase.Get(id) == null) { Debug.LogError($"SMOKE: monster {m.id} skill {id} missing"); fails++; }
-            foreach (var b in Biomes.All)
+            foreach (var b in Biomes.All.Take(Biomes.DungeonBiomes))
             {
                 foreach (var id in b.monsters) if (MonsterDatabase.Get(id) == null) { Debug.LogError($"SMOKE: biome monster {id} missing"); fails++; }
                 if (MonsterDatabase.Get(b.boss) == null) { Debug.LogError($"SMOKE: boss {b.boss} missing"); fails++; }
@@ -88,6 +88,12 @@ namespace Depthbound.EditorTools
         static int GenerateFloors()
         {
             int fails = 0;
+            var hub = DungeonGenerator.GenerateHub(true);
+            var hd = hub.DistanceField(new[] { hub.start }, false);
+            foreach (var p in new[] { new Vector2Int(15, 3), new Vector2Int(15, 24), new Vector2Int(19, 4), new Vector2Int(11, 4), new Vector2Int(4, 20), new Vector2Int(26, 20) })
+                if (hd[p.x, p.y] == int.MaxValue) { Debug.LogError($"SMOKE: hub tile {p} unreachable"); fails++; }
+            foreach (var a in Story.Artifacts)
+                if (MonsterDatabase.Get(Biomes.All[a.biome].boss) == null) { Debug.LogError($"SMOKE: artifact {a.id} has no guardian"); fails++; }
             for (int depth = 1; depth <= 60; depth++)
             {
                 for (int seed = 0; seed < 5; seed++)
@@ -110,6 +116,8 @@ namespace Depthbound.EditorTools
             var w = new World(cls, seed, corruption, meta, false);
             var rng = new Rng(seed + 1);
             var p = w.player;
+            if (!w.InHub) { Debug.LogError("SMOKE: run did not start in the castle hub"); return 1; }
+            w.TakePortal();
             if (startDepth > 1) { w.depth = startDepth; w.GenerateFloor(); }
 
             // Give the hero a pile of loot and skills so every system gets exercised.
@@ -143,6 +151,7 @@ namespace Depthbound.EditorTools
                 else if (action < 57) w.QuaffHealth();
                 else if (action < 59) w.PlayerDodge(p.moveInput);
                 else if (action < 60) w.Interact();
+                if (w.InHub) w.TakePortal();
                 if (t % 600 == 599)
                 {
                     p.pos = w.map.stairs;

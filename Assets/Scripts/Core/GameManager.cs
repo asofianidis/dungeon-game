@@ -54,6 +54,7 @@ namespace Depthbound
             view.Bind(world);
             ui.ResetForRun();
             state = GameState.Playing;
+            if (meta.questStage == 0) ui.OpenDialogue(Story.PrincessDialogue(meta));
         }
 
         public void OpenShop() => ui.OpenShop();

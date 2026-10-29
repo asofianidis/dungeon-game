@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace Depthbound
 {
-    public enum CreatureShape { Humanoid, Beast, Blob, Flyer, Insect, Golem }
+    public enum CreatureShape { Humanoid, Beast, Blob, Flyer, Insect, Golem, Human }
 
     public class MonsterDef
     {
@@ -100,6 +100,12 @@ namespace Depthbound
             M("demon", "Pit Demon", 5, 60, 9, 12, 15, AiType.Melee, CreatureShape.Humanoid, C("901010"), C("f0a020"), 19).El(Element.Fire).Sk("m_charge", "m_firenova").Res(60, -25, 0, 25, -50, 25).Scale(1.2f);
             M("wisp", "Storm Wisp", 5, 18, 14, 0, 40, AiType.Exploder, CreatureShape.Flyer, C("f0f060"), C("ffffff"), 11).Spd(140).El(Element.Lightning).Res(0, 0, 100, 100, 0, 0).Scale(0.7f);
             M("hollowking", "The Hollow King", 5, 640, 12, 25, 20, AiType.Caster, CreatureShape.Humanoid, C("100818"), C("d0a0ff"), 360).Ranged(6).Boss().Sk("m_lightningstorm", "m_shadowbolt", "m_blink", "m_summon_skel").Res(25, 25, 25, 50, -25, 75);
+
+            // ---- The Radiant Crusade (human army, appears in every biome) ----
+            M("crusader", "Radiant Crusader", -1, 34, 5.5f, 14, 8, AiType.Melee, CreatureShape.Human, C("d8c070"), C("e8e8e0"), 12).Res(0, 0, 0, 0, 50, -25).W(0.55f);
+            M("crossbowman", "Crusade Crossbowman", -1, 22, 5, 6, 12, AiType.Ranged, CreatureShape.Human, C("6080b0"), C("e8e8e0"), 11).Ranged(6).Res(0, 0, 0, 0, 40, -25).W(0.45f);
+            M("inquisitor", "Inquisitor", -1, 26, 5, 4, 10, AiType.Caster, CreatureShape.Human, C("a02020"), C("e8e8e0"), 14).Ranged(6).El(Element.Holy).Sk("m_holybolt", "m_curse").Res(0, 0, 0, 0, 60, -25).W(0.4f);
+            M("war_priest", "War Priest", -1, 30, 4.5f, 8, 6, AiType.Caster, CreatureShape.Human, C("f0e0a0"), C("ffffff"), 13).Ranged(5).El(Element.Holy).Sk("m_holybolt", "m_heal").Res(0, 0, 0, 0, 60, -25).W(0.35f);
 
             // ---- Player minions ----
             M("skeleton_minion", "Skeletal Servant", -1, 30, 5, 8, 10, AiType.Minion, CreatureShape.Humanoid, C("e0f0e8"), C("40d0a0"), 0).Res(0, 20, 0, 100, 0, 25);

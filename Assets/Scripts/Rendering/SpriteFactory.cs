@@ -62,6 +62,7 @@ namespace Depthbound
             else if (tile == Tile.Water) DrawLiquid(t, new Color(0.15f, 0.3f, 0.5f), new Color(0.35f, 0.55f, 0.75f), seed);
             else if (tile == Tile.Lava) DrawLiquid(t, new Color(0.75f, 0.2f, 0.05f), new Color(1f, 0.75f, 0.2f), seed);
             else if (tile == Tile.Ice) DrawLiquid(t, new Color(0.6f, 0.75f, 0.85f), new Color(0.9f, 0.95f, 1f), seed);
+            else if (tile == Tile.Carpet) DrawCarpet(t, seed);
             else DrawFloor(t, b, seed);
 
             switch (tile)
@@ -91,6 +92,18 @@ namespace Depthbound
                     var c = Color.Lerp(b.floorA, b.floorB, n);
                     if (Hash(x, y, seed + 3) > 0.93f) c = Shade(c, 1.25f);
                     if (x == 0 || y == 0) c = Shade(c, 0.85f);
+                    t.SetPixel(x, y, c);
+                }
+        }
+
+        static void DrawCarpet(Texture2D t, int seed)
+        {
+            for (int x = 0; x < 16; x++)
+                for (int y = 0; y < 16; y++)
+                {
+                    var c = Color.Lerp(new Color(0.45f, 0.04f, 0.1f), new Color(0.36f, 0.03f, 0.08f), Hash(x, y, seed) * 0.6f);
+                    if (x == 1 || x == 14) c = new Color(0.85f, 0.65f, 0.2f);
+                    if ((x == 7 || x == 8) && y % 8 < 2) c = new Color(0.75f, 0.55f, 0.18f);
                     t.SetPixel(x, y, c);
                 }
         }
