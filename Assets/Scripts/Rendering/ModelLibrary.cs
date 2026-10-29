@@ -32,7 +32,7 @@ namespace Depthbound
             { "Eye", 1.6f }, { "Glow", 1.2f }, { "Fire", 1.8f }, { "Water", 0.25f },
         };
 
-        public static Shader LitShader => lit != null ? lit : (lit = Shader.Find("Depthbound/Lit") ?? Shader.Find("Standard"));
+        public static Shader LitShader => lit != null ? lit : (lit = Shader.Find("Depthbound/Lit") ?? Shader.Find("Universal Render Pipeline/Simple Lit"));
 
         static string Role(string materialName)
         {

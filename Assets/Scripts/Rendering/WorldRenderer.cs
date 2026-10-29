@@ -139,10 +139,9 @@ namespace Depthbound
             torch.intensity = 1.7f;
             torch.shadows = LightShadows.None;
 
+            // Shadow distance and per-object light limits live on the URP asset (Assets/Settings).
             RenderSettings.ambientMode = AmbientMode.Flat;
-            RenderSettings.ambientLight = new Color(0.12f, 0.1f, 0.14f);
-            QualitySettings.pixelLightCount = 8;
-            QualitySettings.shadowDistance = 35f;
+            SetAmbient(new Color(0.12f, 0.1f, 0.14f));
 
             actorRoot = new GameObject("Actors").transform;
             itemRoot = new GameObject("Items").transform;
@@ -238,11 +237,18 @@ namespace Depthbound
             var p = world.player;
             cam.transform.position = CameraPosFor(W3(p.pos));
             var biome = world.map.biome;
-            RenderSettings.ambientLight = world.InHub
+            SetAmbient(world.InHub
                 ? new Color(0.24f, 0.13f, 0.18f)
-                : Color.Lerp(new Color(0.16f, 0.14f, 0.19f), biome.wallA, 0.3f);
+                : Color.Lerp(new Color(0.16f, 0.14f, 0.19f), biome.wallA, 0.3f));
             sun.color = world.InHub ? new Color(1f, 0.6f, 0.7f) : Color.Lerp(new Color(0.6f, 0.65f, 1f), biome.wallA, 0.3f);
             sun.intensity = world.InHub ? 0.4f : 0.5f;
+        }
+
+        /// <summary>Our shaders read a flat ambient color directly rather than the baked ambient probe.</summary>
+        static void SetAmbient(Color c)
+        {
+            RenderSettings.ambientLight = c;
+            Shader.SetGlobalColor("_DepthboundAmbient", c);
         }
 
         // ------------------------------------------------------------------ dungeon mesh
@@ -274,7 +280,7 @@ namespace Depthbound
                     atlasUV[(k, v)] = new Rect((cx + 1 + e) / size, (cy + 1 + e) / size, (16 - 2 * e) / size, (16 - 2 * e) / size);
                 }
             atlas.Apply();
-            var shader = Shader.Find("Depthbound/Map") ?? Shader.Find("Standard");
+            var shader = Shader.Find("Depthbound/Map") ?? Shader.Find("Universal Render Pipeline/Simple Lit");
             if (mapMat == null) mapMat = new Material(shader);
             if (lavaMat == null) lavaMat = new Material(shader);
             mapMat.mainTexture = atlas;

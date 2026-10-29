@@ -34,6 +34,7 @@ namespace Depthbound.EditorTools
         public static void BuildWindows()
         {
             if (!File.Exists(ScenePath)) SetupScene();
+            if (!UrpSetup.IsConfigured) UrpSetup.Configure();
             var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
             {
                 scenes = new[] { ScenePath },
