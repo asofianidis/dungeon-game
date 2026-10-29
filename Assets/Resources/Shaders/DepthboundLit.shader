@@ -1,5 +1,6 @@
-// URP lit shader for characters and props. _Tint/_Flash are driven per-renderer via MaterialPropertyBlock
-// (fog-of-war dimming, hit flashes, wind-up glow) without duplicating materials.
+// URP shader for characters and props. Characters use cel shading (_Toon), a rim light, and an
+// inverted-hull outline (_OutlineWidth, in pixels). _Tint/_Flash are set per renderer via
+// MaterialPropertyBlock for fog-of-war dimming, hit flashes and wind-up glow.
 Shader "Depthbound/Lit"
 {
     Properties
@@ -7,6 +8,10 @@ Shader "Depthbound/Lit"
         _Color ("Color", Color) = (1,1,1,1)
         _MainTex ("Texture", 2D) = "white" {}
         _Emission ("Emission", Color) = (0,0,0,0)
+        _Toon ("Toon", Range(0, 1)) = 0
+        _RimColor ("Rim Color", Color) = (0,0,0,0)
+        _OutlineWidth ("Outline Width (px)", Float) = 0
+        _OutlineColor ("Outline Color", Color) = (0.05,0.03,0.06,1)
         _Tint ("Tint", Color) = (1,1,1,1)
         _Flash ("Flash", Color) = (0,0,0,0)
     }
@@ -21,6 +26,10 @@ Shader "Depthbound/Lit"
         float4 _MainTex_ST;
         half4 _Color;
         half4 _Emission;
+        half _Toon;
+        half4 _RimColor;
+        float _OutlineWidth;
+        half4 _OutlineColor;
         half4 _Tint;
         half4 _Flash;
     CBUFFER_END
@@ -73,9 +82,43 @@ Shader "Depthbound/Lit"
             {
                 half4 c = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv) * _Color;
                 half3 albedo = c.rgb * _Tint.rgb;
-                half3 color = DepthboundLambert(i.positionWS, normalize(i.normalWS), i.positionCS, albedo);
+                half3 n = normalize(i.normalWS);
+                half3 color = DepthboundLighting(i.positionWS, n, i.positionCS, albedo, _Toon);
+                half3 viewDir = GetWorldSpaceNormalizeViewDir(i.positionWS);
+                half rim = pow(1.0 - saturate(dot(n, viewDir)), 4.0);
+                color += _RimColor.rgb * rim * _Tint.rgb;
                 color += _Emission.rgb * _Tint.rgb + _Flash.rgb;
                 return half4(color, 1);
+            }
+            ENDHLSL
+        }
+
+        // Inverted-hull outline, drawn by URP's default unlit pass alongside UniversalForward.
+        Pass
+        {
+            Name "Outline"
+            Tags { "LightMode" = "SRPDefaultUnlit" }
+            Cull Front
+            ZWrite On
+
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+
+            float4 vert(Attributes v) : SV_POSITION
+            {
+                float4 positionCS = TransformObjectToHClip(v.positionOS.xyz);
+                float3 normalWS = TransformObjectToWorldNormal(v.normalOS);
+                float2 normalCS = mul((float3x3)UNITY_MATRIX_VP, normalWS).xy;
+                float len = max(length(normalCS), 1e-5);
+                positionCS.xy += (normalCS / len) * (_OutlineWidth * 2.0 / _ScreenParams.xy) * positionCS.w;
+                return positionCS;
+            }
+
+            half4 frag() : SV_Target
+            {
+                clip(_OutlineWidth - 0.001);
+                return half4(_OutlineColor.rgb * _Tint.rgb + _Flash.rgb * 0.5, 1);
             }
             ENDHLSL
         }

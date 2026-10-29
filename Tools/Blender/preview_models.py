@@ -11,6 +11,11 @@ import sys
 
 args = sys.argv[sys.argv.index("--") + 1:]
 src, out, names = args[0], args[1], args[2:]
+yaw = 0.0
+for n in list(names):
+    if n.startswith("yaw="):
+        yaw = float(n[4:])
+        names.remove(n)
 
 for o in list(bpy.data.objects):
     bpy.data.objects.remove(o, do_unlink=True)
@@ -37,8 +42,9 @@ cam_data.type = "ORTHO"
 cam_data.ortho_scale = 1.4 * max(1, len(names)) * 1.05
 cam = bpy.data.objects.new("cam", cam_data)
 scene.collection.objects.link(cam)
-cam.location = (0, -8, 2.2)
-cam.rotation_euler = (math.radians(80), 0, math.radians(0))
+dist = 8.0
+cam.location = (math.sin(math.radians(yaw)) * dist, -math.cos(math.radians(yaw)) * dist, 2.6 if yaw else 2.2)
+cam.rotation_euler = (math.radians(76 if yaw else 80), 0, math.radians(yaw))
 scene.camera = cam
 bpy.ops.render.render(write_still=True)
 print("rendered", out)

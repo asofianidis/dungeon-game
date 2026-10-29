@@ -27,6 +27,7 @@ namespace Depthbound
             for (int i = 0; i < n; i++) yield return null;
         }
 
+        /// <summary>Captures at the end of the current frame, so callers must yield before changing state.</summary>
         void Shot(string name) => ScreenCapture.CaptureScreenshot(Path.Combine(dir, name + ".png"));
 
         IEnumerator Start()
@@ -48,9 +49,20 @@ namespace Depthbound
             p.facing = Vector2.up;
             yield return Frames(30);
             Shot("2_hub_dialogue");
+            yield return Frames(2);
             gm.ui.DebugOpen(0);
             yield return Frames(20);
             Shot("3_hub");
+            yield return Frames(2);
+
+            // Close-up portrait of the Archdemon facing the princess.
+            p.pos = new Vector2(15, 23.4f);
+            p.facing = Vector2.down;
+            gm.view.zoom = 1.6f;
+            yield return Frames(60);
+            Shot("3b_closeup");
+            yield return Frames(2);
+            gm.view.zoom = 9f;
             p.pos = new Vector2(15, 6);
             p.facing = Vector2.down;
             yield return Frames(30);
@@ -106,15 +118,18 @@ namespace Depthbound
             {
                 p.pos = boss.pos + new Vector2(0, -2.2f);
                 if (w.map.Walkable(p.x, p.y) == false) p.pos = boss.pos;
-                yield return Frames(10);
+                yield return Frames(60);
                 Shot("7_boss");
+                yield return Frames(2);
                 w.Kill(boss, p);
                 yield return Frames(40);
                 Shot("8_artifact");
+                yield return Frames(2);
             }
             gm.ui.DebugOpen(1);
             yield return Frames(5);
             Shot("9_inventory");
+            yield return Frames(2);
             gm.ui.DebugOpen(3);
             yield return Frames(5);
             Shot("10_hero");

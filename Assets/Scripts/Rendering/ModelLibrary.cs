@@ -17,14 +17,15 @@ namespace Depthbound
         static readonly Dictionary<string, Color> palette = new Dictionary<string, Color>
         {
             { "Primary", new Color(0.55f, 0.1f, 0.1f) }, { "Secondary", new Color(0.3f, 0.3f, 0.3f) },
-            { "Skin", new Color(0.5f, 0.1f, 0.12f) }, { "SkinPale", new Color(0.85f, 0.7f, 0.85f) },
+            { "Skin", new Color(0.62f, 0.16f, 0.16f) }, { "SkinPale", new Color(0.96f, 0.82f, 0.86f) },
             { "Horn", new Color(0.12f, 0.1f, 0.09f) }, { "Eye", new Color(1f, 0.75f, 0.2f) },
             { "Glow", new Color(0.75f, 0.3f, 1f) }, { "Metal", new Color(0.62f, 0.63f, 0.68f) },
             { "Gold", new Color(0.92f, 0.72f, 0.2f) }, { "Wood", new Color(0.38f, 0.23f, 0.11f) },
             { "Stone", new Color(0.42f, 0.4f, 0.45f) }, { "Cloth", new Color(0.42f, 0.06f, 0.22f) },
             { "Dark", new Color(0.05f, 0.04f, 0.06f) }, { "Water", new Color(0.2f, 0.45f, 0.85f) },
             { "Fire", new Color(1f, 0.5f, 0.1f) }, { "Hair", new Color(0.12f, 0.05f, 0.18f) },
-            { "White", new Color(0.9f, 0.9f, 0.86f) }, { "Wing", new Color(0.28f, 0.05f, 0.1f) },
+            { "White", new Color(0.92f, 0.92f, 0.88f) }, { "Wing", new Color(0.3f, 0.05f, 0.12f) },
+            { "Leather", new Color(0.2f, 0.12f, 0.08f) }, { "HairPrincess", new Color(0.24f, 0.07f, 0.3f) },
         };
 
         static readonly Dictionary<string, float> emissive = new Dictionary<string, float>
@@ -41,19 +42,32 @@ namespace Depthbound
             return dot > 0 ? n.Substring(0, dot) : n;
         }
 
-        public static Material Get(string role, Color? overrideColor = null)
+        /// <summary>Shared material for a role. Characters get cel shading, a rim light and an outline.</summary>
+        public static Material Get(string role, Color? overrideColor = null, bool character = false)
         {
-            var color = overrideColor ?? (palette.TryGetValue(role, out var c) ? c : Color.magenta);
-            string key = role + "_" + ColorUtility.ToHtmlStringRGB(color);
+            bool face = role.StartsWith("Face");
+            var color = face ? Color.white : overrideColor ?? (palette.TryGetValue(role, out var c) ? c : Color.magenta);
+            string key = role + "_" + ColorUtility.ToHtmlStringRGB(color) + (character ? "_c" : "");
             if (materials.TryGetValue(key, out var m)) return m;
             m = new Material(LitShader) { name = key, color = color };
+            if (face) m.mainTexture = FaceFactory.Get(role.Substring(4));
             if (emissive.TryGetValue(role, out var e)) m.SetColor("_Emission", color * e);
+            if (character)
+            {
+                m.SetFloat("_Toon", 1f);
+                m.SetColor("_RimColor", new Color(0.32f, 0.24f, 0.38f) * 0.7f);
+                bool glow = emissive.ContainsKey(role);
+                m.SetFloat("_OutlineWidth", glow ? 0f : 1.6f);
+                var baseColor = face ? new Color(0.5f, 0.2f, 0.25f) : color;
+                m.SetColor("_OutlineColor", Color.Lerp(new Color(0.03f, 0.02f, 0.04f), baseColor, 0.22f));
+            }
+            else m.SetFloat("_Toon", 0.35f);
             materials[key] = m;
             return m;
         }
 
         /// <summary>Instantiate a model. Primary/Secondary/Skin colors may be overridden per instance.</summary>
-        public static GameObject Spawn(string model, Transform parent, Color? primary = null, Color? secondary = null, Color? skin = null)
+        public static GameObject Spawn(string model, Transform parent, Color? primary = null, Color? secondary = null, Color? skin = null, bool character = false)
         {
             if (!prefabs.TryGetValue(model, out var prefab))
             {
@@ -79,7 +93,7 @@ namespace Depthbound
                 {
                     string role = mats[i] != null ? Role(mats[i].name) : "Primary";
                     Color? o = role == "Primary" ? primary : role == "Secondary" ? secondary : (role == "Skin" ? skin : null);
-                    mats[i] = Get(role, o);
+                    mats[i] = Get(role, o, character);
                 }
                 r.sharedMaterials = mats;
                 r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
@@ -94,6 +108,12 @@ namespace Depthbound
         {
             if (facesBackward.TryGetValue(model, out var b)) return b;
             float z = 0; int n = 0;
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            {
+                // Every model carries an empty named "Front" placed in front of it.
+                if (t.name == "Front") { z = root.InverseTransformPoint(t.position).z; n = 1; break; }
+            }
+            if (n == 0)
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
             {
                 if (!t.name.StartsWith("Eye") && t.name != "Snout" && t.name != "Visor" && t.name != "Lock" && t.name != "Rune") continue;

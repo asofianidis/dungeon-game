@@ -3,25 +3,26 @@ using UnityEngine;
 
 namespace Depthbound
 {
-    /// <summary>Procedural animation for the part-based models: walk cycles, wing flaps, attacks and wind-ups.</summary>
+    /// <summary>
+    /// Procedural animation for the skinned Blender models. Bones are rotated about axes of the
+    /// character's own frame (right = X, up = Y, forward = Z), so it works regardless of how each bone
+    /// is oriented after import. Handles bipeds, quadrupeds, spiders, flyers and blobs.
+    /// </summary>
     public class ModelRig : MonoBehaviour
     {
-        class Joint
+        class Bone
         {
             public Transform t;
-            public Quaternion rot;
-            public Vector3 pos, scale;
-            public float side, phase;
+            public Quaternion bind;
+            public Vector3 bindPos;
         }
 
-        Joint body, head, armL, armR, tail;
-        readonly List<Joint> legs = new List<Joint>();
-        readonly List<Joint> wings = new List<Joint>();
+        readonly Dictionary<string, Bone> bones = new Dictionary<string, Bone>();
+        readonly List<Bone> all = new List<Bone>();
+        Transform frame;
+        Vector3 modelScale, modelPos;
         public bool hover, squash;
         float seed;
-
-        static Joint J(Transform t, float side = 0, float phase = 0) =>
-            t == null ? null : new Joint { t = t, rot = t.localRotation, pos = t.localPosition, scale = t.localScale, side = side, phase = phase };
 
         public static ModelRig Attach(GameObject model, bool hover, bool squash)
         {
@@ -29,64 +30,143 @@ namespace Depthbound
             rig.hover = hover;
             rig.squash = squash;
             rig.seed = Random.value * 10f;
+            rig.frame = model.transform.parent != null ? model.transform.parent : model.transform;
+            rig.modelScale = model.transform.localScale;
+            rig.modelPos = model.transform.localPosition;
             foreach (var t in model.GetComponentsInChildren<Transform>(true))
             {
-                string n = t.name;
-                if (n == "Body") rig.body = J(t);
-                else if (n == "Head") rig.head = J(t);
-                else if (n == "ArmL") rig.armL = J(t, 1);
-                else if (n == "ArmR") rig.armR = J(t, -1);
-                else if (n == "Tail") rig.tail = J(t);
-                else if (n.StartsWith("Wing") && (n.EndsWith("L") || n.EndsWith("R")) && !n.StartsWith("WingBone"))
-                    rig.wings.Add(J(t, n.EndsWith("L") ? 1 : -1));
-                else if (n.StartsWith("Leg") && (n.EndsWith("L") || n.EndsWith("R")))
-                {
-                    string mid = n.Substring(3, n.Length - 4);
-                    int index = mid.Length > 0 && int.TryParse(mid, out var k) ? k - 1 : 0;
-                    float side = n.EndsWith("L") ? 1 : -1;
-                    // Alternate legs (and diagonal pairs for quadrupeds / insects).
-                    float phase = (side > 0 ? 0 : Mathf.PI) + (index % 2) * Mathf.PI;
-                    rig.legs.Add(J(t, side, phase));
-                }
+                if (t == model.transform || rig.bones.ContainsKey(t.name) || t.GetComponent<Renderer>() != null) continue;
+                var b = new Bone { t = t, bind = t.localRotation, bindPos = t.localPosition };
+                rig.bones[t.name] = b;
+                rig.all.Add(b);
             }
             return rig;
         }
 
+        static readonly Vector3 Right = Vector3.right, Up = Vector3.up, Fwd = Vector3.forward;
+
+        void Rot(string name, Vector3 frameAxis, float degrees)
+        {
+            if (Mathf.Abs(degrees) < 0.01f || !bones.TryGetValue(name, out var b) || b.t.parent == null) return;
+            var axis = b.t.parent.InverseTransformDirection(frame.TransformDirection(frameAxis));
+            b.t.localRotation = Quaternion.AngleAxis(degrees, axis) * b.t.localRotation;
+        }
+
+        void Lift(string name, float amount)
+        {
+            if (!bones.TryGetValue(name, out var b) || b.t.parent == null) return;
+            b.t.localPosition = b.bindPos + b.t.parent.InverseTransformVector(frame.up * amount);
+        }
+
+        bool Has(string name) => bones.ContainsKey(name);
+
         /// <param name="move">0..1 walking amount</param>
-        /// <param name="attack">0..1 attack swing (1 = start of swing)</param>
+        /// <param name="attack">0..1 progress through an attack swing (0 = not attacking)</param>
         /// <param name="windup">0..1 wind-up before a melee swing</param>
         public void Pose(float time, float move, float attack, float windup)
         {
+            foreach (var b in all) { b.t.localRotation = b.bind; b.t.localPosition = b.bindPos; }
             float t = time + seed;
-            float walk = t * 11f;
-            foreach (var l in legs)
-                l.t.localRotation = l.rot * Quaternion.Euler(Mathf.Sin(walk + l.phase) * 32f * move, 0, 0);
+            float walk = t * 9.5f;
+            float breathe = Mathf.Sin(t * 2.1f);
 
-            float swing = Mathf.Sin(walk) * 22f * move;
-            float strike = attack > 0 ? Mathf.Sin(attack * Mathf.PI) : 0;
-            if (armL != null) armL.t.localRotation = armL.rot * Quaternion.Euler(-swing, 0, 0);
-            if (armR != null)
-                armR.t.localRotation = armR.rot * Quaternion.Euler(swing - 95f * strike - 120f * windup, 0, 0);
-
-            float flap = hover ? Mathf.Sin(t * 16f) * 35f : Mathf.Sin(t * 2.2f) * 8f + (move > 0 ? Mathf.Sin(t * 9f) * 6f : 0);
-            foreach (var w in wings)
-                w.t.localRotation = w.rot * Quaternion.Euler(0, 0, flap * w.side) * Quaternion.Euler(0, -12f * w.side * windup, 0);
-
-            if (tail != null) tail.t.localRotation = tail.rot * Quaternion.Euler(0, Mathf.Sin(t * 3f) * 14f, 0);
-
-            if (body != null)
+            // ---- Bipeds ----
+            if (Has("UpperLegL"))
             {
-                float bob = Mathf.Abs(Mathf.Sin(walk)) * 0.05f * move;
-                float hoverY = hover ? Mathf.Sin(t * 3f) * 0.08f : 0;
-                body.t.localPosition = body.pos + new Vector3(0, bob + hoverY, 0);
-                body.t.localRotation = body.rot * Quaternion.Euler(10f * strike - 14f * windup + 4f * move, 0, 0);
-                if (squash)
+                Lift("Hips", Mathf.Abs(Mathf.Sin(walk)) * 0.035f * move - 0.01f * move);
+                Rot("Hips", Up, Mathf.Sin(walk) * 6f * move);
+                Rot("Spine", Right, 5f * move + breathe * 1.2f);
+                Rot("Chest", Up, -Mathf.Sin(walk) * 8f * move);
+                Rot("Chest", Right, breathe * 1.5f - 6f * windup);
+                Rot("Head", Up, Mathf.Sin(t * 0.8f) * 7f);
+                Rot("Head", Right, Mathf.Sin(t * 1.3f) * 2f);
+                foreach (var (side, s) in new[] { ("L", 0f), ("R", Mathf.PI) })
                 {
-                    float s = 1f + Mathf.Sin(t * (move > 0 ? 10f : 3f)) * (move > 0 ? 0.12f : 0.05f);
-                    body.t.localScale = new Vector3(body.scale.x / Mathf.Sqrt(s), body.scale.y * s, body.scale.z / Mathf.Sqrt(s));
+                    float ph = walk + s;
+                    Rot("UpperLeg" + side, Right, -Mathf.Sin(ph) * 30f * move);
+                    Rot("LowerLeg" + side, Right, Mathf.Max(0f, Mathf.Cos(ph)) * 40f * move);
+                    Rot("Foot" + side, Right, -Mathf.Max(0f, Mathf.Cos(ph)) * 12f * move);
+                }
+                // Arms swing opposite the legs; the right arm also attacks.
+                float sideOut = 8f + breathe * 1.5f;
+                Rot("UpperArmL", Fwd, -sideOut);
+                Rot("UpperArmL", Right, Mathf.Sin(walk) * 24f * move);
+                Rot("LowerArmL", Right, -18f - 10f * move);
+                Rot("UpperArmR", Fwd, sideOut);
+                if (attack > 0)
+                {
+                    float k = 1f - (1f - attack) * (1f - attack);           // ease out
+                    Rot("UpperArmR", Right, Mathf.Lerp(-150f, 20f, k));
+                    Rot("LowerArmR", Right, Mathf.Lerp(-50f, -10f, k));
+                    Rot("Chest", Up, Mathf.Lerp(-18f, 22f, k));
+                }
+                else
+                {
+                    Rot("UpperArmR", Right, -Mathf.Sin(walk) * 24f * move - 150f * windup);
+                    Rot("LowerArmR", Right, -18f - 10f * move - 40f * windup);
                 }
             }
-            if (head != null) head.t.localRotation = head.rot * Quaternion.Euler(Mathf.Sin(t * 1.7f) * 3f, Mathf.Sin(t * 0.9f) * 6f, 0);
+
+            // ---- Quadrupeds (front legs Leg/Shin, hind legs Leg2/Shin2) and spiders (Leg..Leg4) ----
+            if (Has("LegL"))
+            {
+                bool spider = Has("Leg4L");
+                for (int i = 1; i <= 4; i++)
+                {
+                    string idx = i == 1 ? "" : i.ToString();
+                    if (!Has("Leg" + idx + "L")) continue;
+                    foreach (var (side, sign) in new[] { ("L", 1f), ("R", -1f) })
+                    {
+                        // Diagonal gait: front-left moves with hind-right.
+                        float ph = walk * (spider ? 1.4f : 1f) + (i % 2 == 0 ? Mathf.PI : 0f) + (side == "R" ? Mathf.PI : 0f);
+                        if (spider)
+                        {
+                            Rot("Leg" + idx + side, Up, Mathf.Sin(ph) * 18f * move * sign);
+                            Rot("Leg" + idx + side, Fwd, Mathf.Max(0f, Mathf.Cos(ph)) * 14f * move * sign + breathe * 2f * sign);
+                        }
+                        else
+                        {
+                            Rot("Leg" + idx + side, Right, -Mathf.Sin(ph) * 28f * move);
+                            Rot("Shin" + idx + side, Right, (i == 1 ? -1f : 1f) * Mathf.Max(0f, Mathf.Cos(ph)) * 35f * move);
+                        }
+                    }
+                }
+                if (!spider)
+                {
+                    Lift("Hips", Mathf.Abs(Mathf.Sin(walk)) * 0.03f * move);
+                    Rot("Head", Right, Mathf.Sin(walk * 2f) * 3f * move + breathe * 2f - 15f * windup + 25f * Mathf.Sin(attack * Mathf.PI));
+                    Rot("Chest", Right, breathe * 1.5f);
+                }
+                else
+                {
+                    Rot("Abdomen", Right, breathe * 4f);
+                    Rot("Head", Right, -12f * windup + 18f * Mathf.Sin(attack * Mathf.PI));
+                }
+            }
+
+            // ---- Wings ----
+            float flap = hover ? Mathf.Sin(t * 15f) * 38f : breathe * 5f + Mathf.Sin(t * 8f) * 8f * move;
+            foreach (var (side, sign) in new[] { ("L", 1f), ("R", -1f) })
+            {
+                Rot("Wing" + side, Up, -sign * (10f - 25f * windup));
+                Rot("Wing" + side, Fwd, sign * flap);
+                Rot("WingTip" + side, Fwd, sign * flap * 0.5f);
+            }
+
+            // ---- Tails ----
+            for (int i = 1; i <= 3; i++) Rot("Tail" + i, Up, Mathf.Sin(t * 2.6f - i * 0.7f) * 11f);
+
+            // ---- Flyers and blobs move the whole model ----
+            if (hover)
+            {
+                Rot("Body", Right, -6f * windup + 10f * Mathf.Sin(attack * Mathf.PI));
+                transform.localPosition = modelPos + new Vector3(0, Mathf.Sin(t * 3f) * 0.07f, 0);
+            }
+            if (squash)
+            {
+                float s = 1f + Mathf.Sin(t * (move > 0 ? 9f : 3f)) * (move > 0 ? 0.12f : 0.05f) + 0.2f * windup;
+                transform.localScale = new Vector3(modelScale.x / Mathf.Sqrt(s), modelScale.y * s, modelScale.z / Mathf.Sqrt(s));
+            }
         }
     }
 }

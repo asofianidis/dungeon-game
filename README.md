@@ -2,7 +2,7 @@
 
 A procedurally generated, real-time 3D action roguelike built in Unity 6. You are an Archdemon, the champion of a succubus princess, diving into an endless Abyss to recover her family's stolen artifacts from the human army.
 
-Dungeons are generated in code. Characters and props are low-poly models built by a Blender script (`Tools/Blender`).
+Dungeons are generated in code. Characters and props are anime-style models built by a Blender script (`Tools/Blender`), rendered with cel shading in URP.
 
 ## Story and the castle hub
 
@@ -17,8 +17,11 @@ Dungeons are generated in code. Characters and props are low-poly models built b
 
 - Each floor is a single generated mesh: textured walls and floors, emissive lava, and fog of war in the vertex colors.
 - An angled perspective camera with moonlight shadows, a torch light that follows you, and flickering braziers and portals.
-- Blender-built models for the Archdemon, the princess, human soldiers, six creature body types (tinted per monster), and every prop.
-- Procedural animation: walk cycles, wing flaps, tail sway, attack swings, red-glowing wind-ups before monster attacks, and hit flashes.
+- **Universal Render Pipeline** with custom HLSL shaders. Characters get anime cel shading, a rim light and ink outlines. Faces are painted procedurally (glossy irises, lashes, brows, blush) onto UV-mapped heads.
+- **Modeled, not assembled.** Bodies are sculpted with Blender's Skin modifier over a joint graph and subdivided. Hair clumps, curved horns, tails and bat-wing fingers are tapered tubes. Gowns, pillars and fountains are lathed. Armor, chests and the throne are bevelled hard-surface pieces.
+- **Skinned skeletons.** Every character has an armature with weighted bodies and rigidly bound accessories. Animation is procedural on the bones: walk cycles with knees and elbows, diagonal quadruped gaits, spider legs, wing flaps, tail sway, attack swings, wind-ups, breathing and idle head motion.
+- **Live dialogue portraits.** An off-screen portrait studio renders the speaking character, animated, into the dialogue box.
+- Models: the Archdemon, Princess Lysandra, crusader knight, undead ghoul, wolf-beast, bat, spider, rock golem, ooze, imp quartermaster, plus every prop (throne, gate, pillars, braziers, chests, shrine, fountain, relic, ...).
 
 ## Real-time combat
 
@@ -78,7 +81,8 @@ Combined with attribute allocation and 72 skills that stack across schools, this
 Assets/
   Scenes/Main.unity          Single bootstrap scene
   Resources/Models/          FBX models exported by Tools/Blender/build_models.py
-  Resources/Shaders/         Depthbound/Lit (models) and Depthbound/Map (dungeon mesh with fog of war)
+  Resources/Shaders/         URP HLSL: Depthbound/Lit (cel shading + outlines) and Depthbound/Map (dungeon mesh with fog of war)
+  Settings/                  URP pipeline and renderer assets
   Scripts/
     Core/      GameManager (state + input), World (real-time simulation, hub, floors, loot), Story (princess + artifacts), Rng, MetaProgress
     Dungeon/   DungeonMap (tiles, FOV, LOS, distance fields), DungeonGenerator (BSP/caves/ruins/hybrid + castle hub)
@@ -87,15 +91,18 @@ Assets/
     Skills/    SkillDef, SkillDatabase (all 72 + monster/proc skills), SkillExecutor
     Items/     Item, ItemDatabase (bases, affixes, legendaries), ItemGenerator
     Combat/    Combat (hit resolution, statuses, procs), Projectile, MonsterAI (real-time steering, windups)
-    Rendering/ WorldRenderer (3D), ModelLibrary (FBX loading/materials), ModelRig (procedural animation), SpriteFactory (textures/icons), Fx
+    Rendering/ WorldRenderer (3D), ModelLibrary (FBX loading, cel materials), ModelRig (bone animation), FaceFactory (anime faces),
+               PortraitStudio (dialogue portraits), SpriteFactory (textures/icons), Fx
     UI/        GameUI (IMGUI: all screens and panels)
   Editor/
     ProjectSetup.cs   Menu: Depthbound > Setup Main Scene / Build Windows
+    UrpSetup.cs       Menu: Depthbound > Configure URP
+    ModelImportSettings.cs  Import rules for the Blender FBX files (axis baking, skeletons)
     SmokeTest.cs      Headless test: data integrity, 300 generated floors, movement/navigation, simulated runs per class
     BalanceBot.cs     Real-time autoplay bot that reports how deep each class gets in an hour of play
 Tools/Blender/
   build_models.py    Builds every model from primitives and exports FBX
-  preview_models.py  Renders a lineup PNG of exported models for a quick visual check
+  preview_models.py  Renders a lineup PNG of exported models (add yaw=40 for a three-quarter view)
 ```
 
 ## Running
@@ -126,6 +133,6 @@ Builds/Windows/Depthbound.exe -screen-width 1600 -screen-height 900 -screen-full
 
 - Save and resume mid-run
 - Sound effects and music
-- Skinned, keyframed animations and more detailed models
+- Hand-keyframed animation clips, hand-painted textures, and more facial expressions
 - More castle NPCs and branching dialogue
 - Set items, crafting/rerolling at the merchant, more biomes and bosses

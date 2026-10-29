@@ -212,6 +212,7 @@ namespace Depthbound
 
         void Update()
         {
+            PortraitStudio.Tick();
             if (world == null || world.map == null) return;
             if (builtVersion != world.floorVersion) Rebuild();
             if (TilesChanged()) RebuildMapMesh();
@@ -481,7 +482,8 @@ namespace Depthbound
 
         PropView SpawnProp(Tile t, string model, int x, int y)
         {
-            var go = ModelLibrary.Spawn(model, floorRoot);
+            bool character = t == Tile.Princess || t == Tile.Merchant;
+            var go = ModelLibrary.Spawn(model, floorRoot, character: character);
             var holder = new GameObject(model + "_prop");
             holder.transform.SetParent(floorRoot, false);
             holder.transform.position = new Vector3(x, 0, y);
@@ -514,14 +516,14 @@ namespace Depthbound
             bool hoverFly = false, squash = false;
             if (a is Player pl)
             {
-                v.model = ModelLibrary.Spawn("demon", v.root.transform, primary: pl.cls.color);
+                v.model = ModelLibrary.Spawn("demon", v.root.transform, primary: pl.cls.color, character: true);
             }
             else
             {
                 var m = (Monster)a;
                 hoverFly = m.def.shape == CreatureShape.Flyer;
                 squash = m.def.shape == CreatureShape.Blob;
-                v.model = ModelLibrary.Spawn(ModelLibrary.ModelFor(m.def.shape), v.root.transform, primary: m.def.c1, secondary: m.def.c2);
+                v.model = ModelLibrary.Spawn(ModelLibrary.ModelFor(m.def.shape), v.root.transform, primary: m.def.c1, secondary: m.def.c2, character: true);
                 v.model.transform.localScale = Vector3.one * (0.85f * a.scale);
                 if (m.rank > 0 || m.faction == Faction.Player)
                 {

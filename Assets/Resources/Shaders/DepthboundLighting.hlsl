@@ -1,5 +1,6 @@
-// Shared URP lighting for Depthbound's shaders: Lambert diffuse from the main light (with shadows)
-// plus all additional lights, and a flat ambient color driven by the game (_DepthboundAmbient).
+// Shared URP lighting for Depthbound's shaders: diffuse from the main light (with shadows) plus all
+// additional lights, and a flat ambient color driven by the game (_DepthboundAmbient).
+// toon = 0 gives plain Lambert (dungeon mesh, props); toon = 1 gives anime-style cel bands.
 #ifndef DEPTHBOUND_LIGHTING_INCLUDED
 #define DEPTHBOUND_LIGHTING_INCLUDED
 
@@ -8,12 +9,21 @@
 
 half4 _DepthboundAmbient;
 
-half3 DepthboundLambert(float3 positionWS, half3 normalWS, float4 positionCS, half3 albedo)
+half DepthboundDiffuse(half ndl, half attenuation, half toon)
+{
+    half lambert = saturate(ndl) * attenuation;
+    // Cel shading: a crisp terminator, and the shadow side keeps some light so forms stay readable.
+    half band = smoothstep(0.0, 0.06, ndl) * smoothstep(0.35, 0.55, attenuation);
+    half cel = lerp(0.38, 1.0, band) * saturate(attenuation * 2.0);
+    return lerp(lambert, cel, toon);
+}
+
+half3 DepthboundLighting(float3 positionWS, half3 normalWS, float4 positionCS, half3 albedo, half toon)
 {
     float4 shadowCoord = TransformWorldToShadowCoord(positionWS);
     Light mainLight = GetMainLight(shadowCoord);
-    half3 lighting = mainLight.color * (mainLight.distanceAttenuation * mainLight.shadowAttenuation)
-                   * saturate(dot(normalWS, mainLight.direction));
+    half3 lighting = mainLight.color * DepthboundDiffuse(dot(normalWS, mainLight.direction),
+                                                         mainLight.distanceAttenuation * mainLight.shadowAttenuation, toon);
 
 #if defined(_ADDITIONAL_LIGHTS)
     // InputData is required by the clustered (Forward+) light loop macros.
@@ -25,12 +35,17 @@ half3 DepthboundLambert(float3 positionWS, half3 normalWS, float4 positionCS, ha
     uint lightsCount = GetAdditionalLightsCount();
     LIGHT_LOOP_BEGIN(lightsCount)
         Light light = GetAdditionalLight(lightIndex, positionWS, shadowMask);
-        lighting += light.color * (light.distanceAttenuation * light.shadowAttenuation)
-                  * saturate(dot(normalWS, light.direction));
+        lighting += light.color * DepthboundDiffuse(dot(normalWS, light.direction),
+                                                    light.distanceAttenuation * light.shadowAttenuation, toon);
     LIGHT_LOOP_END
 #endif
 
     return albedo * (lighting + _DepthboundAmbient.rgb);
+}
+
+half3 DepthboundLambert(float3 positionWS, half3 normalWS, float4 positionCS, half3 albedo)
+{
+    return DepthboundLighting(positionWS, normalWS, positionCS, albedo, 0);
 }
 
 // ---- Shadow caster / depth helpers ----

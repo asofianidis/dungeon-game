@@ -424,10 +424,20 @@ namespace Depthbound
             Rect(new Rect(0, 0, VW, VH), new Color(0, 0, 0, 0.35f));
             float w = Mathf.Min(980, VW - 40);
             var r = Box(new Rect((VW - w) / 2, VH - 300, w, 250));
-            Shadowed(new Rect(r.x + 6, r.y + 2, r.width, 30), $"<b>{page.speaker}</b>", new GUIStyle(header) { fontSize = 22 }, Story.PrincessColor);
-            GUI.Label(new Rect(r.x + 6, r.y + 40, r.width - 12, 150), page.text, new GUIStyle(label) { fontSize = 18 });
+            // Live portrait of the speaker, framed on the left of the box.
+            var portrait = page.speaker == Story.Princess ? PortraitStudio.Get("princess") : null;
+            float textX = r.x + 6;
+            if (portrait != null)
+            {
+                var pr = new Rect(r.x - 4, r.y - 2, 230, 230);
+                Rect(new Rect(pr.x - 2, pr.y - 2, pr.width + 4, pr.height + 4), Story.PrincessColor * 0.8f);
+                GUI.DrawTexture(pr, portrait, ScaleMode.ScaleAndCrop);
+                textX = pr.xMax + 16;
+            }
+            Shadowed(new Rect(textX, r.y + 2, r.xMax - textX, 30), $"<b>{page.speaker}</b>", new GUIStyle(header) { fontSize = 22 }, Story.PrincessColor);
+            GUI.Label(new Rect(textX, r.y + 40, r.xMax - textX - 6, 150), page.text, new GUIStyle(label) { fontSize = 18 });
             bool last = dialogueIndex == dialogue.Count - 1;
-            GUI.Label(new Rect(r.x + 6, r.yMax - 34, 300, 26), $"<size=12><color=#999999>{dialogueIndex + 1}/{dialogue.Count}   Space / E to continue</color></size>", small);
+            GUI.Label(new Rect(textX, r.yMax - 34, 300, 26), $"<size=12><color=#999999>{dialogueIndex + 1}/{dialogue.Count}   Space / E to continue</color></size>", small);
             if (GUI.Button(new Rect(r.xMax - 170, r.yMax - 44, 160, 38), last ? "Farewell" : "Continue", button)) AdvanceDialogue();
         }
 
